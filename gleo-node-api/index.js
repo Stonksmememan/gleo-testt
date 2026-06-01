@@ -4,6 +4,7 @@ const cors = require('cors');
 const crypto = require('crypto');
 const clients = require('./config/clients');
 const { analyzePost } = require('./lib/geo-analyzer');
+const { runVisionCritique } = require('./lib/vision-critique');
 const analyticsRoutes = require('./routes/analytics');
 const { initSOVCron } = require('./lib/sov-simulator');
 
@@ -82,6 +83,20 @@ app.use('/v1/analytics', analyticsRoutes);
 
 app.post('/api/process', verifySignature, (req, res) => {
   res.json({ status: 'success', message: 'Signature verified successfully!', data: req.body });
+});
+
+app.post('/v1/optimize/critique', verifySignature, async (req, res) => {
+  const { page_url, post_title } = req.body || {};
+  if (!page_url) {
+    return res.status(400).json({ error: 'Missing page_url' });
+  }
+  try {
+    const result = await runVisionCritique({ page_url, post_title });
+    return res.json({ status: 'ok', data: result });
+  } catch (err) {
+    console.error('[Vision] Critique error:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 app.post('/v1/analyze/start', verifySignature, (req, res) => {

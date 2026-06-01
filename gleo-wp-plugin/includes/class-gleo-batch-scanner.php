@@ -47,6 +47,7 @@ class Gleo_Batch_Scanner {
 		$head_snippets = '';
 		foreach ( array(
 			'//head/meta[@name="robots"]',
+			'//head/meta[@name="gleo:ai-overview"]',
 			'//head/script[@type="application/ld+json"]',
 			'//head/link[@rel="alternate" and contains(@href, "/llms.txt")]',
 		) as $query ) {
@@ -95,6 +96,107 @@ class Gleo_Batch_Scanner {
 				return current_user_can( 'manage_options' );
 			},
 		) );
+
+		register_rest_route( $namespace, '/scan/rescan-post', array(
+			'methods'             => 'POST',
+			'callback'            => array( $this, 'rescan_post' ),
+			'permission_callback' => function() {
+				return current_user_can( 'manage_options' );
+			},
+		) );
+	}
+
+	/**
+	 * Re-analyze a single post after fixes (does not wipe other scan rows).
+	 */
+	public function rescan_post( $request ) {
+		$params  = $request->get_json_params();
+		$post_id = isset( $params['post_id'] ) ? (int) $params['post_id'] : 0;
+
+		if ( $post_id <= 0 ) {
+			return new WP_Error( 'no_post', 'post_id is required.', array( 'status' => 400 ) );
+		}
+
+		$posts = get_posts(
+			array(
+				'post__in'    => array( $post_id ),
+				'numberposts' => 1,
+				'post_status' => 'publish',
+			)
+		);
+
+		if ( empty( $posts ) ) {
+			return new WP_Error( 'no_posts', 'No valid published post found.', array( 'status' => 404 ) );
+		}
+
+		global $wpdb;
+		$table_name = $wpdb->prefix . 'gleo_scans';
+
+		$payload = array(
+			'batch_id' => uniqid( 'rescan_' ),
+			'webhook'  => rest_url( 'gleo/v1/scan/webhook' ),
+			'site_url' => get_site_url(),
+			'posts'    => array(),
+		);
+
+		$api_client = new Gleo_API_Client();
+		$post       = $posts[0];
+
+		$permalink = get_permalink( $post->ID );
+		$response  = null;
+
+		if ( $permalink ) {
+			$response = wp_remote_get(
+				$permalink,
+				array(
+					'timeout' => 25,
+					'headers' => array(
+						'Cache-Control' => 'no-cache',
+						'Pragma'        => 'no-cache',
+					),
+				)
+			);
+		}
+
+		$html_content = '';
+		if ( $response && ! is_wp_error( $response ) && 200 === (int) wp_remote_retrieve_response_code( $response ) ) {
+			$full_html    = wp_remote_retrieve_body( $response );
+			$focused_html = $this->extract_focus_html_from_rendered_page( $full_html );
+			$html_content = '' !== $focused_html ? $focused_html : $full_html;
+		} else {
+			$html_content = $api_client->sanitize_content( $post->post_content );
+		}
+
+		$payload['posts'][] = array(
+			'id'      => $post->ID,
+			'title'   => $post->post_title,
+			'content' => $html_content,
+		);
+
+		$wpdb->replace(
+			$table_name,
+			array(
+				'post_id'     => $post->ID,
+				'scan_status' => 'pending',
+			),
+			array( '%d', '%s' )
+		);
+
+		$response = $api_client->send_request( '/v1/analyze/start', $payload, 60 );
+
+		if ( is_wp_error( $response ) ) {
+			$wpdb->delete( $table_name, array( 'post_id' => $post->ID ), array( '%d' ) );
+			return $response;
+		}
+
+		return rest_ensure_response(
+			array(
+				'success'  => true,
+				'message'  => 'Re-scan started.',
+				'batch_id' => $payload['batch_id'],
+				'post_id'  => $post->ID,
+			)
+		);
 	}
 
 	public function start_scan( $request ) {
@@ -137,7 +239,16 @@ class Gleo_Batch_Scanner {
 			$response = null;
 
 			if ( $permalink ) {
-				$response = wp_remote_get( $permalink );
+				$response = wp_remote_get(
+					$permalink,
+					array(
+						'timeout' => 25,
+						'headers' => array(
+							'Cache-Control' => 'no-cache',
+							'Pragma'        => 'no-cache',
+						),
+					)
+				);
 			}
 			
 			$html_content = '';

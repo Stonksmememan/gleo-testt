@@ -29,7 +29,7 @@ class Gleo_API_Client {
 	/**
 	 * Send a generic signed request to the Node API.
 	 */
-	public function send_request( $endpoint, $payload ) {
+	public function send_request( $endpoint, $payload, $timeout = 30 ) {
 		$client_id  = get_option( 'gleo_client_id' );
 		$secret_key = get_option( 'gleo_secret_key' );
 
@@ -49,7 +49,7 @@ class Gleo_API_Client {
 				'X-Gleo-Client-Id'   => $client_id,
 				'X-Gleo-Signature'   => $signature,
 			),
-			'timeout' => 30, // 30 seconds timeout for LLM backend
+			'timeout' => (int) $timeout,
 		);
 
 		$endpoint = '/' . ltrim( (string) $endpoint, '/' );

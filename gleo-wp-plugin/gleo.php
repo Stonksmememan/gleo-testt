@@ -79,6 +79,7 @@ function gleo_register_settings() {
 // Include API Client & Modules
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-gleo-api-client.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-gleo-batch-scanner.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-gleo-optimize.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-gleo-frontend.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-gleo-analytics.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-gleo-tracking.php';

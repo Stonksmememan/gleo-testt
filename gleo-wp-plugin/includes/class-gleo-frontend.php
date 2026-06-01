@@ -12,6 +12,9 @@ class Gleo_Frontend {
 		// JSON-LD injection into <head>
 		add_action( 'wp_head', array( $this, 'inject_json_ld' ), 1 );
 
+		// AI overview (not shown to visitors — meta + JSON-LD + crawler-only markup).
+		add_action( 'wp_head', array( $this, 'inject_ai_overview_head' ), 3 );
+
 		// /llms.txt is served dynamically (see serve_llms_txt); this <head> link lets crawlers and the Gleo scanner detect it.
 		add_action( 'wp_head', array( $this, 'inject_llms_link' ), 2 );
 
@@ -36,6 +39,8 @@ class Gleo_Frontend {
 		// Block themes often wrap the post in a 3-column row with only the middle column filled.
 		// Redistribute those inner blocks across left / center / right (parse_blocks) so the row isn’t empty on the sides.
 		add_filter( 'the_content', array( $this, 'filter_rebalance_three_column_rows' ), 8 );
+		add_filter( 'the_content', array( $this, 'strip_legacy_visible_ai_overview' ), 7 );
+		add_filter( 'the_content', array( $this, 'append_ai_only_overview_markup' ), 99 );
 		add_filter( 'wp_insert_post_data', array( $this, 'filter_insert_post_rebalance_columns' ), 99, 2 );
 	}
 
@@ -272,6 +277,23 @@ GLEO_CSS;
 		$accent_soft = $this->hex_to_rgba( $accent, '0.12' );
 		?>
 <style id="gleo-content-styles">
+/* AI overview — in HTML for crawlers only; never shown to visitors */
+.gleo-ai-only {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  padding: 0 !important;
+  margin: -1px !important;
+  overflow: hidden !important;
+  clip: rect(0, 0, 0, 0) !important;
+  clip-path: inset(50%) !important;
+  white-space: nowrap !important;
+  border: 0 !important;
+}
+.gleo-ai-only[hidden] {
+  display: block !important;
+}
+
 /* Headings injected by Gleo “structure” fix — same body stack + scale as article copy (no random serif/size jumps) */
 .entry-content h2.wp-block-heading.gleo-section-heading,
 main h2.wp-block-heading.gleo-section-heading,
@@ -358,12 +380,12 @@ main .wp-block-columns .wp-block-column h2.wp-block-heading.gleo-section-heading
 
 /* ── FAQ accordion ─────────────────────────────────────────────────────── */
 .gleo-faq-wrap > h2 {
-  font-size: clamp(1.05rem, 0.9rem + 0.6vw, 1.35rem);
-  font-weight: 700;
+  font-size: clamp(1.05rem, 0.95rem + 0.35vw, 1.25rem);
+  font-weight: 600;
   letter-spacing: -0.01em;
-  margin: 0 0 0.75em;
+  margin: 0 0 0.65em;
   color: var(--gc-text);
-  line-height: 1.3;
+  line-height: 1.35;
 }
 .gleo-faq-accordion {
   border: 1px solid var(--gc-border);
@@ -813,12 +835,86 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 				$post = get_post( (int) $row->post_id );
 				if ( ! $post ) continue;
 
+				$overview = get_post_meta( (int) $post->ID, '_gleo_ai_overview', true );
 				echo '### ' . $plain( $post->post_title ) . "\n";
-				echo '- URL: ' . esc_url_raw( get_permalink( $post->ID ) ) . "\n\n";
+				echo '- URL: ' . esc_url_raw( get_permalink( $post->ID ) ) . "\n";
+				if ( is_string( $overview ) && '' !== trim( $overview ) ) {
+					echo '- Summary: ' . $plain( $overview ) . "\n";
+				}
+				echo "\n";
 			}
 		}
 
 		exit;
+	}
+
+	/**
+	 * Output AI overview in <head> for crawlers (not rendered as a visible page block).
+	 */
+	public function inject_ai_overview_head() {
+		if ( ! is_singular( 'post' ) ) {
+			return;
+		}
+		global $post;
+		$overview = get_post_meta( $post->ID, '_gleo_ai_overview', true );
+		if ( ! is_string( $overview ) || '' === trim( $overview ) ) {
+			return;
+		}
+		$overview = trim( $overview );
+		echo "\n<!-- Gleo AI overview (for crawlers; hidden from visual layout) -->\n";
+		echo '<meta name="gleo:ai-overview" content="' . esc_attr( $overview ) . '">' . "\n";
+		$schema = array(
+			'@context'            => 'https://schema.org',
+			'@type'               => 'WebPage',
+			'name'                => wp_strip_all_tags( $post->post_title ),
+			'url'                 => get_permalink( $post->ID ),
+			'abstract'            => $overview,
+			'description'         => $overview,
+			'speakable'           => array(
+				'@type'       => 'SpeakableSpecification',
+				'cssSelector' => array( '.gleo-ai-only[data-gleo="ai-overview"]' ),
+			),
+			'mainEntityOfPage'    => get_permalink( $post->ID ),
+		);
+		echo '<script type="application/ld+json">' . wp_json_encode( $schema, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE ) . '</script>' . "\n";
+	}
+
+	/**
+	 * Remove legacy visible “In brief” blocks when AI overview lives in meta.
+	 *
+	 * @param string $content Post content.
+	 * @return string
+	 */
+	public function strip_legacy_visible_ai_overview( $content ) {
+		if ( is_admin() || ! is_singular( 'post' ) ) {
+			return $content;
+		}
+		$post_id = get_the_ID();
+		if ( ! $post_id || ! get_post_meta( $post_id, '_gleo_ai_overview', true ) ) {
+			return $content;
+		}
+		return $this->gleo_strip_opening_summary_block( $content );
+	}
+
+	/**
+	 * Append crawler-readable overview markup (visually hidden from visitors).
+	 *
+	 * @param string $content Post content.
+	 * @return string
+	 */
+	public function append_ai_only_overview_markup( $content ) {
+		if ( is_admin() || ! is_singular( 'post' ) || ! in_the_loop() || ! is_main_query() ) {
+			return $content;
+		}
+		$post_id = get_the_ID();
+		$overview = get_post_meta( $post_id, '_gleo_ai_overview', true );
+		if ( ! is_string( $overview ) || '' === trim( $overview ) ) {
+			return $content;
+		}
+		$block  = '<div class="gleo-ai-only" hidden aria-hidden="true" data-gleo="ai-overview">';
+		$block .= '<p>' . esc_html( trim( $overview ) ) . '</p>';
+		$block .= '</div>';
+		return $content . "\n" . $block;
 	}
 
 	/**
@@ -1226,10 +1322,401 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 	 *
 	 * @return string[]
 	 */
+	/**
+	 * Phrases that make injected GEO copy sound templated (never use in headings).
+	 *
+	 * @return string[]
+	 */
+	private function gleo_banned_heading_phrases() {
+		return array(
+			'closer look',
+			'key details',
+			'what you need to know',
+			'deep dive',
+			'key takeaways',
+			'important considerations',
+			'data overview',
+			'additional insights',
+		);
+	}
+
+	/**
+	 * @param string $heading Heading text.
+	 * @return bool
+	 */
+	private function gleo_heading_is_banned( $heading ) {
+		$lower = strtolower( wp_strip_all_tags( $heading ) );
+		foreach ( $this->gleo_banned_heading_phrases() as $phrase ) {
+			if ( false !== strpos( $lower, $phrase ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Remove or rewrite robotic template phrases in generated HTML fragments.
+	 *
+	 * @param string $html HTML fragment.
+	 * @return string
+	 */
+	private function gleo_scrub_robotic_phrases( $html ) {
+		if ( ! is_string( $html ) || '' === trim( $html ) ) {
+			return '';
+		}
+		$out = $html;
+		$replacements = array(
+			'/A\s+Closer\s+Look:?\s*/i'        => '',
+			'/A\s+closer\s+look\s+at\s+/i'     => '',
+			'/Data\s+Overview/i'               => 'At a glance',
+			'/Frequently\s+Asked\s+Questions/i' => 'Common questions',
+		);
+		foreach ( $replacements as $pattern => $replace ) {
+			$out = preg_replace( $pattern, $replace, $out );
+		}
+		return $out;
+	}
+
+	/**
+	 * Build FAQ Q&A pairs from the post when Gemini assets are missing.
+	 *
+	 * @param WP_Post $post Post.
+	 * @return array<int, array{q: string, a: string}>
+	 */
+	/**
+	 * Score how relevant FAQ template keywords are to post text.
+	 *
+	 * @param string   $haystack Lowercased body text.
+	 * @param string[] $keywords Keywords.
+	 * @return int
+	 */
+	private function gleo_faq_keyword_score( $haystack, $keywords ) {
+		$score = 0;
+		foreach ( $keywords as $kw ) {
+			if ( false !== strpos( $haystack, $kw ) ) {
+				$score += 2;
+			}
+		}
+		return $score;
+	}
+
+	/**
+	 * Pull a short answer from post content when it mentions topic keywords.
+	 *
+	 * @param WP_Post  $post Post.
+	 * @param string[] $keywords Keywords to prefer in an answer sentence.
+	 * @param string   $fallback Fallback answer.
+	 * @return string
+	 */
+	private function gleo_faq_answer_from_content( $post, $keywords, $fallback ) {
+		$plain = wp_strip_all_tags( $post->post_content );
+		$sents = preg_split( '/(?<=[.!?])\s+/', $plain, -1, PREG_SPLIT_NO_EMPTY );
+		foreach ( $sents as $sentence ) {
+			$lower = strtolower( $sentence );
+			foreach ( $keywords as $kw ) {
+				if ( false !== strpos( $lower, $kw ) && str_word_count( $sentence ) >= 8 ) {
+					return wp_trim_words( trim( $sentence ), 45, '' );
+				}
+			}
+		}
+		return $fallback;
+	}
+
+	/**
+	 * FAQ pairs using questions people commonly ask (price, booking, expectations).
+	 *
+	 * @param WP_Post $post Post.
+	 * @return array<int, array{q: string, a: string}>
+	 */
+	private function gleo_practical_faq_pairs( $post ) {
+		$topic     = $this->gleo_short_topic_label( $post );
+		$haystack  = strtolower( wp_strip_all_tags( $post->post_title . ' ' . $post->post_content ) );
+		$fragments = $this->gleo_content_fragments( $post );
+		$excerpt   = ! empty( $fragments[0] ) ? wp_trim_words( $fragments[0], 55, '' ) : wp_trim_words( wp_strip_all_tags( $post->post_content ), 55, '' );
+
+		$candidates = array(
+			array(
+				'q'     => sprintf( __( 'How much does %s cost?', 'gleo' ), $topic ),
+				'a'     => $this->gleo_faq_answer_from_content( $post, array( 'price', 'cost', 'fee', 'pricing', '$', 'rate' ), $excerpt ),
+				'score' => 5 + $this->gleo_faq_keyword_score( $haystack, array( 'price', 'cost', 'fee', 'pricing', '$' ) ),
+			),
+			array(
+				'q'     => sprintf( __( 'How do I book or schedule %s?', 'gleo' ), $topic ),
+				'a'     => $this->gleo_faq_answer_from_content( $post, array( 'book', 'appointment', 'schedule', 'call', 'contact', 'reserve' ), sprintf( __( 'Use the contact options on this page to reach the team about %s — they can confirm availability and next steps.', 'gleo' ), $topic ) ),
+				'score' => 4 + $this->gleo_faq_keyword_score( $haystack, array( 'book', 'appointment', 'schedule', 'contact' ) ),
+			),
+			array(
+				'q'     => sprintf( __( 'What should I expect from %s?', 'gleo' ), $topic ),
+				'a'     => $excerpt,
+				'score' => 6,
+			),
+			array(
+				'q'     => sprintf( __( 'How long does %s take?', 'gleo' ), $topic ),
+				'a'     => $this->gleo_faq_answer_from_content( $post, array( 'hour', 'day', 'week', 'minute', 'timeline', 'turnaround' ), $excerpt ),
+				'score' => 3 + $this->gleo_faq_keyword_score( $haystack, array( 'hour', 'day', 'week', 'time', 'long' ) ),
+			),
+			array(
+				'q'     => sprintf( __( 'Is %s right for me?', 'gleo' ), $topic ),
+				'a'     => $this->gleo_faq_answer_from_content( $post, array( 'ideal', 'best for', 'if you', 'customers', 'clients' ), $excerpt ),
+				'score' => 4,
+			),
+			array(
+				'q'     => sprintf( __( 'What do I need before getting started with %s?', 'gleo' ), $topic ),
+				'a'     => $this->gleo_faq_answer_from_content( $post, array( 'bring', 'prepare', 'need', 'require', 'before' ), $excerpt ),
+				'score' => 3 + $this->gleo_faq_keyword_score( $haystack, array( 'need', 'require', 'prepare' ) ),
+			),
+			array(
+				'q'     => sprintf( __( 'Where is %s located?', 'gleo' ), $topic ),
+				'a'     => $this->gleo_faq_answer_from_content( $post, array( 'located', 'address', 'city', 'neighborhood', 'office' ), $excerpt ),
+				'score' => 2 + $this->gleo_faq_keyword_score( $haystack, array( 'location', 'address', 'street', 'city' ) ),
+			),
+			array(
+				'q'     => sprintf( __( 'Do you offer consultations for %s?', 'gleo' ), $topic ),
+				'a'     => $this->gleo_faq_answer_from_content( $post, array( 'consult', 'consultation', 'free', 'quote', 'estimate' ), $excerpt ),
+				'score' => 3 + $this->gleo_faq_keyword_score( $haystack, array( 'consult', 'quote', 'estimate', 'free' ) ),
+			),
+		);
+
+		usort(
+			$candidates,
+			static function ( $a, $b ) {
+				return ( (int) $b['score'] ) <=> ( (int) $a['score'] );
+			}
+		);
+
+		$out = array();
+		foreach ( array_slice( $candidates, 0, 4 ) as $row ) {
+			$out[] = array(
+				'q' => $row['q'],
+				'a' => $row['a'],
+			);
+		}
+		return $out;
+	}
+
+	/**
+	 * @param WP_Post $post Post.
+	 * @return array<int, array{q: string, a: string}>
+	 */
+	private function gleo_fallback_faq_pairs( $post ) {
+		return $this->gleo_practical_faq_pairs( $post );
+	}
+
+	/**
+	 * Prefer practical customer-style FAQ questions from generated HTML.
+	 *
+	 * @param array<int, array{q: string, a: string}> $pairs Pairs.
+	 * @return array<int, array{q: string, a: string}>
+	 */
+	private function gleo_filter_practical_faq_pairs( $pairs ) {
+		$good = array();
+		foreach ( $pairs as $pair ) {
+			$q = isset( $pair['q'] ) ? trim( (string) $pair['q'] ) : '';
+			if ( '' === $q || ! preg_match( '/\?\s*$/', $q ) ) {
+				continue;
+			}
+			if ( $this->gleo_heading_is_banned( $q ) ) {
+				continue;
+			}
+			// Drop vague / academic phrasing.
+			if ( preg_match( '/\b(overview|landscape|paradigm|synergy|leverage|delve|realm)\b/i', $q ) ) {
+				continue;
+			}
+			if ( preg_match( '/\b(how much|how long|how do|what should|is .+ right|where is|do you|can i|what do i need)\b/i', $q ) ) {
+				$good[] = $pair;
+				continue;
+			}
+			if ( preg_match( '/\b(what|why|when|where|who|does|do|is|are|can)\b/i', $q ) ) {
+				$good[] = $pair;
+			}
+		}
+		return count( $good ) >= 2 ? $good : $pairs;
+	}
+
+	/**
+	 * Recompute GEO score (0–100) from content signals — mirrors gleo-node-api scoring.
+	 *
+	 * @param array $signals Content signals.
+	 * @param int   $brand_rate Brand inclusion 0–10.
+	 * @return int
+	 */
+	private function gleo_compute_geo_score( $signals, $brand_rate = 0 ) {
+		if ( ! is_array( $signals ) ) {
+			return 0;
+		}
+		$score = 0;
+
+		$alt_cov = isset( $signals['alt_text_coverage'] ) ? (int) $signals['alt_text_coverage'] : 0;
+		$img_cnt = isset( $signals['image_count'] ) ? (int) $signals['image_count'] : 0;
+		if ( $alt_cov >= 90 ) {
+			$score += 5;
+		} elseif ( $alt_cov >= 50 ) {
+			$score += 3;
+		} elseif ( 0 === $img_cnt ) {
+			$score += 5;
+		}
+		if ( empty( $signals['has_meta_robots_block'] ) ) {
+			$score += 5;
+		}
+		if ( ! empty( $signals['has_llms_txt'] ) ) {
+			$score += 5;
+		}
+		if ( ! empty( $signals['has_schema'] ) ) {
+			$score += 10;
+		}
+		if ( ! empty( $signals['has_faq_schema'] ) ) {
+			$score += 5;
+		}
+		if ( ! empty( $signals['has_org_schema'] ) ) {
+			$score += 5;
+		}
+
+		$wc = isset( $signals['word_count'] ) ? (int) $signals['word_count'] : 0;
+		if ( $wc >= 2000 ) {
+			$score += 10;
+		} elseif ( $wc >= 1200 ) {
+			$score += 7;
+		} elseif ( $wc >= 600 ) {
+			$score += 4;
+		} elseif ( $wc > 0 ) {
+			$score += 1;
+		}
+		if ( ! empty( $signals['has_direct_answer'] ) ) {
+			$score += 5;
+		}
+		if ( ! empty( $signals['has_tldr'] ) ) {
+			$score += 5;
+		}
+		if ( ! empty( $signals['has_conversational_queries'] ) ) {
+			$score += 3;
+		}
+		if ( ! empty( $signals['has_direct_answers'] ) ) {
+			$score += 2;
+		}
+		if ( $wc >= 800 && ! empty( $signals['has_statistics'] ) ) {
+			$score += 3;
+		}
+		if ( ! empty( $signals['has_quotes'] ) ) {
+			$score += 2;
+		}
+
+		$stat_count = isset( $signals['stat_count'] ) ? (int) $signals['stat_count'] : 0;
+		if ( $stat_count >= 3 ) {
+			$score += 5;
+		} elseif ( $stat_count >= 1 ) {
+			$score += 3;
+		}
+		$cite = isset( $signals['citation_count'] ) ? (int) $signals['citation_count'] : 0;
+		if ( $cite >= 3 ) {
+			$score += 5;
+		} elseif ( $cite >= 1 ) {
+			$score += 3;
+		}
+		if ( ! empty( $signals['has_quotes'] ) ) {
+			$score += 5;
+		}
+
+		$hc = isset( $signals['heading_count'] ) ? (int) $signals['heading_count'] : 0;
+		if ( $hc >= 4 ) {
+			$score += 5;
+		} elseif ( $hc >= 2 ) {
+			$score += 3;
+		} elseif ( ! empty( $signals['has_headings'] ) ) {
+			$score += 1;
+		}
+		$long_p = isset( $signals['long_paragraphs'] ) ? (int) $signals['long_paragraphs'] : 0;
+		$para_c = isset( $signals['paragraph_count'] ) ? (int) $signals['paragraph_count'] : 0;
+		if ( 0 === $long_p && $para_c > 0 ) {
+			$score += 5;
+		} elseif ( $long_p <= 2 ) {
+			$score += 3;
+		}
+		$list_c = isset( $signals['list_item_count'] ) ? (int) $signals['list_item_count'] : 0;
+		if ( $list_c >= 3 ) {
+			$score += 4;
+		} elseif ( ! empty( $signals['has_lists'] ) ) {
+			$score += 2;
+		}
+		if ( ! empty( $signals['has_faq'] ) ) {
+			$score += 3;
+		}
+		if ( ! empty( $signals['has_table'] ) ) {
+			$score += 3;
+		}
+
+		return min( 100, $score );
+	}
+
+	/**
+	 * Bump content signals after a successful fix so stored GEO score reflects improvements.
+	 *
+	 * @param array  $cs Signals (by reference).
+	 * @param string $type Fix type.
+	 * @param WP_Post $post Post.
+	 * @param bool   $authority_has_numeric_stat Stats flag.
+	 * @return void
+	 */
+	private function gleo_bump_signals_after_fix( &$cs, $type, $post, $authority_has_numeric_stat = false ) {
+		switch ( $type ) {
+			case 'schema':
+				$cs['has_schema']     = true;
+				$cs['has_org_schema'] = true;
+				break;
+			case 'schema_enrich':
+				$cs['has_org_schema'] = true;
+				$cs['has_faq_schema'] = true;
+				break;
+			case 'structure':
+				$cs['has_headings']   = true;
+				$cs['heading_count']  = max( (int) ( $cs['heading_count'] ?? 0 ), 6 );
+				break;
+			case 'formatting':
+				$cs['has_lists']         = true;
+				$cs['list_item_count']   = max( (int) ( $cs['list_item_count'] ?? 0 ), 12 );
+				break;
+			case 'readability':
+				$cs['long_paragraphs'] = 0;
+				break;
+			case 'faq':
+			case 'answer_readiness':
+				$cs['has_faq']            = true;
+				$cs['has_direct_answers'] = true;
+				break;
+			case 'data_tables':
+				$cs['has_table'] = true;
+				break;
+			case 'content_depth':
+				$cs['word_count'] = max( (int) ( $cs['word_count'] ?? 0 ), 1200 );
+				break;
+			case 'credibility':
+				$cs['has_citations']   = true;
+				$cs['citation_count']  = max( (int) ( $cs['citation_count'] ?? 0 ), 5 );
+				break;
+			case 'authority':
+				if ( $authority_has_numeric_stat ) {
+					$cs['stat_count']      = max( (int) ( $cs['stat_count'] ?? 0 ), 3 );
+					$cs['has_statistics']  = true;
+				}
+				break;
+			case 'opening_summary':
+				$cs['has_direct_answer'] = true;
+				$cs['has_tldr']          = true;
+				break;
+			case 'image_alt_text':
+				$cs['alt_text_coverage'] = max( (int) ( $cs['alt_text_coverage'] ?? 0 ), 95 );
+				break;
+			case 'expert_quotes':
+				$cs['has_quotes'] = true;
+				break;
+			case 'robots_txt_allow':
+				$cs['has_llms_txt'] = true;
+				break;
+		}
+	}
+
 	private function gleo_section_heading_body_pool() {
 		return array(
 			'Background on %s',
-			'A closer look at %s',
 			'How %s works',
 			'What to know about %s',
 			'Key facts about %s',
@@ -1302,7 +1789,7 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 			},
 			$normalized
 		);
-		return $normalized;
+		return $this->gleo_scrub_robotic_phrases( $normalized );
 	}
 
 	/**
@@ -1314,7 +1801,18 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 	 */
 	private function gleo_section_heading_labels_for_post( $post, $max_slots = 4 ) {
 		$t          = $this->gleo_short_topic_label( $post );
-		$pool       = $this->gleo_section_heading_body_pool();
+		$pool       = array_values(
+			array_filter(
+				$this->gleo_section_heading_body_pool(),
+				function ( $template ) {
+					$probe = sprintf( $template, 'sample topic' );
+					return ! $this->gleo_heading_is_banned( $probe );
+				}
+			)
+		);
+		if ( empty( $pool ) ) {
+			$pool = array( 'How %s works', 'What to know about %s' );
+		}
 		$n          = count( $pool );
 		$max_slots  = max( 1, min( 4, (int) $max_slots ) );
 		if ( $n < $max_slots ) {
@@ -1335,7 +1833,13 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 		}
 		$out = array();
 		foreach ( $idxs as $ix ) {
-			$out[] = sprintf( $pool[ $ix ], $t );
+			$label = sprintf( $pool[ $ix ], $t );
+			if ( ! $this->gleo_heading_is_banned( $label ) ) {
+				$out[] = $label;
+			}
+		}
+		while ( count( $out ) < $max_slots ) {
+			$out[] = sprintf( 'More about %s', $t );
 		}
 		return $out;
 	}
@@ -1731,10 +2235,11 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 			}
 		}
 
-		$content = $post->post_content;
-		$modified = false;
+		$content         = $post->post_content;
+		$modified        = false;
 		$authority_has_numeric_stat = false;
-		$faq_pairs_for_schema = array();
+		$faq_pairs_for_schema       = array();
+		$geo_score_out   = null;
 
 		switch ( $type ) {
 
@@ -1752,14 +2257,11 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 				break;
 
 			case 'opening_summary':
-				$content  = $this->gleo_strip_key_takeaways_block( $content );
-				$content  = $this->gleo_strip_opening_summary_block( $content );
-				$opening   = $this->gleo_build_opening_summary_block( $post, $contextual_assets );
-				// Place summary deeper to avoid overlapping theme hero/header text regions.
-				$p_total = (int) preg_match_all( '/<\/p>/i', $content );
-				$target  = $p_total >= 6 ? 3 : 2;
-				$content = $this->inject_after_paragraph( $content, $opening, $target );
-				$modified  = true;
+				$content = $this->gleo_strip_key_takeaways_block( $content );
+				$content = $this->gleo_strip_opening_summary_block( $content );
+				$brief   = $this->gleo_opening_in_brief_text( $post, $contextual_assets );
+				update_post_meta( $post_id, '_gleo_ai_overview', $brief );
+				$modified = true;
 				break;
 
 			case 'image_alt_text':
@@ -1790,7 +2292,7 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 					);
 				}
 				$fig  = '<figure class="gleo-expert-quote"><blockquote class="gleo-expert-quote__text"><p>' . esc_html( $quote ) . '</p></blockquote>';
-				$fig .= '<figcaption class="gleo-expert-quote__cite">' . esc_html__( 'Expert perspective', 'gleo' ) . '</figcaption></figure>';
+				$fig .= '<figcaption class="gleo-expert-quote__cite">' . esc_html__( 'Note', 'gleo' ) . '</figcaption></figure>';
 				$blk  = "<!-- wp:html -->\n{$fig}\n<!-- /wp:html -->";
 				$pos  = max( 2, (int) floor( (int) preg_match_all( '/<\/p>/i', $content ) / 3 ) );
 				$content = $this->inject_after_paragraph( $content, $blk, $pos );
@@ -1804,7 +2306,12 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 				'',
 				$content
 			);
-			$gleo_legacy = array( 'Key Details', 'What You Need to Know', 'Important Considerations', 'Key Takeaways', 'Additional Insights' );
+			$content = preg_replace(
+				'/\n?<!-- wp:heading -->\s*<h2[^>]*>[^<]*[Cc]loser [Ll]ook[^<]*<\/h2>\s*<!-- \/wp:heading -->\s*/i',
+				'',
+				$content
+			);
+			$gleo_legacy = array( 'Key Details', 'What You Need to Know', 'Important Considerations', 'Key Takeaways', 'Additional Insights', 'A Closer Look' );
 			foreach ( $gleo_legacy as $gl ) {
 				$content = preg_replace(
 					'/\n?<!-- wp:heading -->\s*<h2[^>]*>' . preg_quote( $gl, '/' ) . '<\/h2>\s*<!-- \/wp:heading -->\s*/i',
@@ -1968,9 +2475,11 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 					}
 				}
 
-				// Do not fabricate FAQ entries; require generated FAQ/Q&A content.
+				if ( ! empty( $pairs ) ) {
+					$pairs = $this->gleo_filter_practical_faq_pairs( $pairs );
+				}
 				if ( empty( $pairs ) ) {
-					return new WP_Error( 'missing_input', 'FAQ content is not available yet. Run optimization first so FAQ entries are generated.', array( 'status' => 400 ) );
+					$pairs = $this->gleo_practical_faq_pairs( $post );
 				}
 
 				// Build accordion HTML
@@ -1984,7 +2493,8 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 						. '</div>';
 				}
 				$faq_pairs_for_schema = array_slice( $pairs, 0, 5 );
-				$faq_inner = '<div class="gleo-faq-wrap"><h2>Frequently Asked Questions</h2>'
+				$faq_title = __( 'Questions people often ask', 'gleo' );
+				$faq_inner = '<div class="gleo-faq-wrap"><h2 class="wp-block-heading">' . esc_html( $faq_title ) . '</h2>'
 					. '<div class="gleo-faq-accordion">' . $items_html . '</div></div>';
 				// Wrap as a proper Gutenberg HTML block so the block editor preserves it intact.
 				$faq_block = "<!-- wp:html -->\n" . $faq_inner . "\n<!-- /wp:html -->";
@@ -2000,7 +2510,7 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 					preg_match( '/<table[^>]*>(.*?)<\/table>/si', $raw, $tm );
 					if ( ! empty( $tm[1] ) ) {
 						$inner_table = $this->annotate_table_with_data_labels( $tm[1] );
-						$table_inner = '<div class="gleo-table-block"><h3>Data Overview</h3>'
+						$table_inner = '<div class="gleo-table-block"><h3>' . esc_html( $this->gleo_short_topic_label( $post ) ) . '</h3>'
 							. '<div class="gleo-table-scroll"><table class="gleo-data-table">' . $inner_table . '</table></div></div>';
 					} else {
 						$table_inner = '<div class="gleo-table-block"><div class="gleo-table-scroll">' . wp_kses_post( $raw ) . '</div></div>';
@@ -2029,6 +2539,15 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 			case 'authority':
 				$content = $this->gleo_strip_stats_callout_blocks( $content );
 				$stats_text = is_string( $user_input ) && ! empty( $user_input ) ? sanitize_textarea_field( $user_input ) : '';
+				if ( '' === $stats_text && is_array( $contextual_assets ) && ! empty( $contextual_assets['authority_html'] ) ) {
+					$stats_text = wp_strip_all_tags( $contextual_assets['authority_html'] );
+				}
+				if ( '' === $stats_text || $this->gleo_text_looks_like_stat_placeholder_instruction( $stats_text ) ) {
+					$plain = wp_strip_all_tags( $post->post_content );
+					if ( preg_match( '/[^.!?]*\d+%?[^.!?]*[.!?]/', $plain, $stat_match ) ) {
+						$stats_text = trim( $stat_match[0] );
+					}
+				}
 				if ( '' === $stats_text ) {
 					return new WP_Error( 'missing_input', __( 'Statistics text is required.', 'gleo' ), array( 'status' => 400 ) );
 				}
@@ -2063,10 +2582,11 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 			case 'content_depth':
 				if ( ! empty( $contextual_assets['depth_html'] ) ) {
 					$depth_html = $this->normalize_contextual_fragment( $contextual_assets['depth_html'] );
+					$depth_html = $this->gleo_scrub_robotic_phrases( $depth_html );
 					$content = $this->inject_after_paragraph( $content, wp_kses_post( $depth_html ), 3 );
 				} else {
-					$topic      = esc_html( $post->post_title );
-					$expansion  = "\n<!-- wp:heading -->\n<h2 class=\"wp-block-heading\">A Closer Look: {$topic}</h2>\n<!-- /wp:heading -->\n";
+					$topic      = esc_html( $this->gleo_short_topic_label( $post ) );
+					$expansion  = "\n<!-- wp:heading -->\n<h2 class=\"wp-block-heading gleo-section-heading\">" . sprintf( 'How %s works', $topic ) . "</h2>\n<!-- /wp:heading -->\n";
 					$clean = trim( preg_replace( '/\s+/', ' ', wp_strip_all_tags( $post->post_content ) ) );
 					$sentences = preg_split( '/(?<=[.!?])\s+/', $clean, -1, PREG_SPLIT_NO_EMPTY );
 					$fallback_one = ! empty( $sentences[0] ) ? $sentences[0] : sprintf( '%s is best understood by looking at the specific details in this article.', $topic );
@@ -2086,10 +2606,20 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 		// If content was modified, update the post
 		if ( $modified ) {
 			$content = $this->gleo_strip_instructional_stat_snippets( $content );
-			wp_update_post( array(
-				'ID'           => $post_id,
-				'post_content' => $content,
-			) );
+			$updated = wp_update_post(
+				array(
+					'ID'           => $post_id,
+					'post_content' => $content,
+				),
+				true
+			);
+			if ( is_wp_error( $updated ) ) {
+				return new WP_Error( 'update_failed', $updated->get_error_message(), array( 'status' => 500 ) );
+			}
+			if ( 0 === (int) $updated ) {
+				return new WP_Error( 'update_failed', __( 'WordPress could not save the updated post content.', 'gleo' ), array( 'status' => 500 ) );
+			}
+			clean_post_cache( $post_id );
 		}
 
 		// ALWAYS update the scan result history to persist the score for the frontend
@@ -2150,36 +2680,10 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 				}
 			}
 			$cs = &$result_data['content_signals'];
-			switch ( $type ) {
-				case 'schema':
-					$cs['has_schema'] = true;
-					$cs['has_org_schema'] = true;
-					break;
-				case 'schema_enrich':
-					$cs['has_org_schema'] = true;
-					break;
-				case 'structure': $cs['has_headings'] = true; $cs['heading_count'] = max($cs['heading_count'] ?? 0, 6); break;
-				case 'formatting': $cs['has_lists'] = true; $cs['list_item_count'] = max($cs['list_item_count'] ?? 0, 12); break;
-				case 'faq': $cs['has_faq'] = true; break;
-				case 'credibility': $cs['has_citations'] = true; $cs['citation_count'] = max($cs['citation_count'] ?? 0, 5); break;
-				case 'authority':
-					if ( $authority_has_numeric_stat ) {
-						$cs['stat_count'] = max( (int) ( $cs['stat_count'] ?? 0 ), 1 );
-						$cs['has_statistics'] = true;
-					}
-					break;
-				case 'answer_readiness': $cs['has_direct_answers'] = true; break;
-				case 'opening_summary':
-					$cs['has_direct_answer'] = true;
-					$cs['has_tldr']         = true;
-					break;
-				case 'image_alt_text':
-					$cs['alt_text_coverage'] = max( (int) ( $cs['alt_text_coverage'] ?? 0 ), 95 );
-					break;
-				case 'expert_quotes':
-					$cs['has_quotes'] = true;
-					break;
-			}
+			$this->gleo_bump_signals_after_fix( $cs, $type, $post, $authority_has_numeric_stat );
+			$brand = isset( $result_data['brand_inclusion_rate'] ) ? (int) $result_data['brand_inclusion_rate'] : 0;
+			$result_data['geo_score'] = $this->gleo_compute_geo_score( $cs, $brand );
+			$geo_score_out            = (int) $result_data['geo_score'];
 			$wpdb->update(
 				$table_name,
 				array( 'scan_result' => wp_json_encode( $result_data ) ),
@@ -2188,10 +2692,11 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 		}
 
 		return rest_ensure_response( array(
-			'success'  => true,
-			'post_id'  => $post_id,
-			'type'     => $type,
-			'modified' => $modified,
+			'success'    => true,
+			'post_id'    => $post_id,
+			'type'       => $type,
+			'modified'   => $modified,
+			'geo_score'  => $geo_score_out,
 		) );
 	}
 }

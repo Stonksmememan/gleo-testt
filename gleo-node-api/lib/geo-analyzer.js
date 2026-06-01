@@ -19,6 +19,14 @@ const GENERIC_COPY_PATTERNS = [
   /crafted with passion/i,
   /unleash/i,
   /experience the/i,
+  /a closer look/i,
+  /closer look at/i,
+  /key details/i,
+  /what you need to know/i,
+  /important considerations/i,
+  /key takeaways/i,
+  /deep dive/i,
+  /data overview/i,
 ];
 
 function looksGenericCopy(html = '') {
@@ -37,14 +45,23 @@ function looksStatInstructionPlaceholder(text = '') {
 function sanitizeContextualAssets(assets) {
   if (!assets || typeof assets !== 'object') return null;
   const keys = ['data_table_html', 'faq_html', 'depth_html', 'qa_html', 'authority_html'];
+  const out = { ...assets };
+  let hasAny = false;
   for (const key of keys) {
-    if (!assets[key] || typeof assets[key] !== 'string') return null;
-    if (looksGenericCopy(assets[key])) return null;
+    if (!out[key] || typeof out[key] !== 'string') {
+      out[key] = '';
+      continue;
+    }
+    if (looksGenericCopy(out[key])) {
+      out[key] = '';
+      continue;
+    }
+    hasAny = true;
   }
-  if (looksStatInstructionPlaceholder(assets.authority_html)) {
-    assets.authority_html = '<p></p>';
+  if (looksStatInstructionPlaceholder(out.authority_html)) {
+    out.authority_html = '';
   }
-  return assets;
+  return hasAny ? out : null;
 }
 
 /**
@@ -58,16 +75,16 @@ async function generateContextualAssets(title, content) {
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
       contents: [
-        { role: "user", parts: [{ text: `Article title: ${title}\nArticle excerpt (from the page): ${plainText}\n\nWrite HTML snippets this site could paste into WordPress. Stay tightly on the article's real subject and facts from the excerpt. Do not use meta filler, SEO clichés, or template phrases (avoid wording like: "key details", "what you need to know", "deep dive", "key takeaways", "important considerations", "really", duplicated phrases, or headings that sound like a content mill).\n\nNever output instructional placeholder text about statistics (for example do not write "add a verified", "source-backed metric", "figure and source name", or similar editor prompts). For authority_html, either use real numbers clearly grounded in the excerpt or write an empty <p></p>.\n\nNever write marketing slogans or ad copy. Specifically avoid lines like "awaken your senses", "experience the finest", "perfect morning", "crafted with passion", "why choose us", or similar promo language.\n\nFormatting rules:\n- Keep visual hierarchy clean: main section titles are H2; sub-sections inside cards/columns should be H3 or H4 (not H2).\n- Never use inline fixed heights/min-heights/overflow clipping styles.\n- If you output multi-column or multi-card content, keep each column structurally parallel (same type of container, similar heading level + paragraph/list pattern).\n- Ensure link and text colors stay readable on dark backgrounds (high contrast, no dark text on dark backgrounds).\n- Table headers must be concise and prominent.\n\nInclude: (1) a comparison table in <figure class=\"wp-block-table\"><table>...</table></figure>, (2) a short FAQ (one clear H2 title + H3 questions + answers), (3) one extra section (H2 + paragraph) that continues the article substance, (4) a compact Q&A block, (5) one paragraph of plausible, topic-relevant statistics written as normal sentences (no heading).` }] }
+        { role: "user", parts: [{ text: `Article title: ${title}\nArticle excerpt (from the page): ${plainText}\n\nWrite HTML snippets a real site owner would paste into WordPress. Sound like a knowledgeable human editor — warm, specific, never templated or salesy.\n\nBanned phrases (never use in headings or body): "a closer look", "closer look at", "key details", "what you need to know", "deep dive", "key takeaways", "important considerations", "data overview", "why choose us", "elevate your", marketing clichés.\n\nUse headings that name the actual topic (e.g. "How ceramic mugs are fired" not "A closer look at mugs"). FAQ questions should sound like real customer questions.\n\nNever output instructional placeholder text about statistics. For authority_html, use real numbers from the excerpt or leave empty.\n\nFormatting: H2 for main section titles only; H3 for FAQ questions. No fixed heights or overflow:hidden. Readable contrast.\n\nInclude: (1) comparison table in <figure class="wp-block-table"><table>...</table></figure>, (2) FAQ with topic-specific H2 + 2–3 H3 questions that real customers ask (price, booking, timing, expectations, location — not academic or obscure questions), (3) one extra H2 section with a useful paragraph, (4) compact Q&A block, (5) one <p> with statistics as normal sentences if the excerpt supports it.` }] }
       ],
       config: {
-        systemInstruction: "You are an experienced web editor and accessibility-minded frontend writer. Output valid, minimal HTML fragments suitable for WordPress. Use only the supplied title and excerpt; be specific and natural. Never use generic SEO headings, marketing slogans, or repetitive filler. Keep structure balanced, readable, and semantically correct. Return strict JSON only.",
+        systemInstruction: "You are a senior editor for a small business website. Write natural, trustworthy copy that matches the excerpt. No SEO filler, no robotic templates, no generic section titles. Return strict JSON only.",
         responseMimeType: "application/json",
         responseSchema: {
           type: "OBJECT",
           properties: {
             data_table_html: { type: "STRING", description: "Comparison table about the article topic only; <figure class=\"wp-block-table\"><table>...</table></figure>." },
-            faq_html: { type: "STRING", description: "FAQ: one concrete H2 title + 2–3 H3 questions with <p> answers; wording must match the article topic." },
+            faq_html: { type: "STRING", description: "FAQ: one concrete H2 title + 2–3 H3 questions people commonly ask (cost, how to book, what to expect, how long it takes). Each question must sound like a real Google search, not a textbook." },
             depth_html: { type: "STRING", description: "One H2 (specific to the topic, not a generic label) plus one <p> that adds useful detail grounded in the excerpt." },
             qa_html: { type: "STRING", description: "Short Q&A block: natural question heading plus direct answer paragraph about the article's core idea." },
             authority_html: { type: "STRING", description: "Single <p> only: 2–3 real numeric statistics grounded in the excerpt as flowing prose; never instructions to the editor; use <p></p> if no numbers exist in the excerpt." }
@@ -233,13 +250,21 @@ function analyzeContentSignals(htmlContent, title) {
   
   // Direct answer detection: first substantial paragraph is 60-100 words (inverted pyramid)
   const firstParaWords = paragraphs.length > 0 ? paragraphs[0].split(/\s+/).length : 0;
-  const hasDirectAnswer = firstParaWords >= 40 && firstParaWords <= 120;
+  let hasDirectAnswer = firstParaWords >= 40 && firstParaWords <= 120;
+  if (/gleo-direct-answer|gleo-opening-summary-wrap|gleo-ai-only|gleo:ai-overview/i.test(htmlContent || '')) {
+    hasDirectAnswer = true;
+  }
+  if ($full('meta[name="gleo:ai-overview"]').length > 0) {
+    hasDirectAnswer = true;
+  }
   
   // Conversational query targeting
   const hasConversationalQueries = /\b(best|how to|what is|why|can i|should i|compared to|vs\.?|for a)\b/i.test(cleanText);
   
   // Check for TL;DR or summary blocks
-  const hasTldr = /tl;?dr|at a glance|quick answer|in\s+brief/i.test(cleanText);
+  const hasTldr = /tl;?dr|at a glance|quick answer|in\s+brief/i.test(cleanText) ||
+    /gleo-opening-summary-wrap|gleo-direct-answer|gleo-ai-only/i.test(htmlContent || '') ||
+    $full('meta[name="gleo:ai-overview"]').length > 0;
   
   const hasDirectAnswers = /\b(is|are|was|were|can|does|do|will|how|what|why|when|where)\b[^.?]*\?/i.test(cleanText);
 
@@ -260,9 +285,14 @@ function analyzeContentSignals(htmlContent, title) {
   const listCount = $('ul, ol').length;
   const hasList = listCount > 0;
   
-  const hasTable = $('table').length > 0;
+  const hasTable = $('table').length > 0 || /gleo-data-table|gleo-table-block/i.test(htmlContent || '');
+  const effectiveHeadingCount = Math.max(
+    headingCount,
+    $('h2.gleo-section-heading, .gleo-section-heading').length + $('h3, h4').length
+  );
   
-  const hasFAQ = /faq|frequently\s+asked|common\s+questions/i.test(cleanText);
+  const hasFAQ = /faq|frequently\s+asked|common\s+questions|gleo-faq/i.test(cleanText) ||
+    /gleo-faq-wrap|gleo-faq-accordion/i.test(htmlContent || '');
   
   // Long paragraph detection (paragraphs > 80 words)
   const longParagraphs = paragraphs.filter(p => p.split(/\s+/).length > 80).length;
@@ -293,7 +323,7 @@ function analyzeContentSignals(htmlContent, title) {
     has_quotes: hasQuotes,
     // AI Formatting
     has_headings: hasHeadings,
-    heading_count: headingCount,
+    heading_count: effectiveHeadingCount,
     has_lists: hasList,
     list_item_count: listCount,
     has_table: hasTable,
@@ -485,7 +515,7 @@ function generateRecommendations(signals, brandRate, geoScore) {
       if (!signals.has_llms_txt) issues.push('No /llms.txt reference in page HTML — Gleo serves /llms.txt and adds a head link; re-scan after deploy');
       recs.push({
         priority: score <= 5 ? 'critical' : 'medium',
-        area: 'Technical Crawlability',
+        area: 'Technical & Crawlability',
         score, maxScore: 15,
         message: issues.join('. ') + '.'
       });
@@ -506,7 +536,7 @@ function generateRecommendations(signals, brandRate, geoScore) {
       if (!signals.has_org_schema) issues.push('Add Organization/LocalBusiness/Product schemas as needed');
       recs.push({
         priority: !signals.has_schema ? 'critical' : 'medium',
-        area: 'Structured Data & Schema',
+        area: 'Technical & Schema',
         score, maxScore: 20,
         message: issues.join('. ') + '.'
       });
@@ -532,11 +562,11 @@ function generateRecommendations(signals, brandRate, geoScore) {
       const issues = [];
       if (signals.word_count < 1200) issues.push(`Content is ${signals.word_count} words — aim for 1,200+ with depth`);
       if (!signals.has_direct_answer) issues.push('Put a 60-100 word direct answer at the very top (inverted pyramid)');
-      if (!signals.has_tldr) issues.push('Add an opening “In brief” summary near the top of the article');
+      if (!signals.has_tldr) issues.push('Add an AI-readable summary (stored for crawlers in page metadata, not as a visible promo box)');
       if (!signals.has_conversational_queries) issues.push('Target long-tail conversational queries users ask AI');
       recs.push({
         priority: score <= 10 ? 'critical' : score <= 20 ? 'high' : 'medium',
-        area: 'Content Quality',
+        area: 'Content Writing & Substance',
         score, maxScore: 30,
         message: issues.join('. ') + '.'
       });
@@ -559,7 +589,7 @@ function generateRecommendations(signals, brandRate, geoScore) {
       if (!signals.has_quotes) issues.push('Include expert quotes or real testimonials');
       recs.push({
         priority: score <= 5 ? 'high' : 'medium',
-        area: 'Credibility',
+        area: 'Trust & Brand Signals',
         score, maxScore: 15,
         message: issues.join('. ') + '.'
       });
@@ -588,7 +618,7 @@ function generateRecommendations(signals, brandRate, geoScore) {
       if (!signals.has_table) issues.push('Add comparison tables — AI loves structured tabular data');
       recs.push({
         priority: score <= 8 ? 'high' : 'medium',
-        area: 'AI-Specific Formatting',
+        area: 'Structure & Formatting',
         score, maxScore: 20,
         message: issues.join('. ') + '.'
       });

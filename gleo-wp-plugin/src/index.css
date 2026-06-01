@@ -2028,6 +2028,77 @@
 	line-height: 1.5;
 }
 
+/* One-click optimize progress */
+.gleo-optimize-modal {
+	width: 520px;
+}
+
+.gleo-optimize-progress-track {
+	height: 8px;
+	background: var(--border-lt);
+	border-radius: 999px;
+	overflow: hidden;
+	margin: 16px 0 12px;
+}
+
+.gleo-optimize-progress-fill {
+	height: 100%;
+	background: linear-gradient(90deg, var(--blue), var(--blue-mid));
+	border-radius: 999px;
+	transition: width 0.35s ease;
+}
+
+.gleo-optimize-step-label {
+	font-weight: 600;
+	font-size: 14px;
+	margin: 0 0 6px;
+	color: var(--fg);
+}
+
+.gleo-optimize-detail {
+	font-size: 12.5px;
+	color: var(--fg-muted);
+	line-height: 1.5;
+	margin: 0;
+}
+
+.gleo-analytics-feasibility {
+	margin-top: 20px;
+}
+
+.gleo-feasibility-list {
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+
+.gleo-feasibility-row {
+	padding: 12px 14px;
+	border-radius: var(--radius);
+	border: 1px solid var(--border);
+}
+
+.gleo-feasibility-row strong {
+	display: block;
+	font-size: 13px;
+	margin-bottom: 4px;
+}
+
+.gleo-feasibility-row p {
+	margin: 0;
+	font-size: 12.5px;
+	color: var(--fg-muted);
+	line-height: 1.5;
+}
+
+.gleo-feasibility-yes {
+	border-left: 3px solid var(--green);
+}
+
+.gleo-feasibility-partial {
+	border-left: 3px solid var(--amber);
+}
+
 /* ==========================================================================
    wp-admin spacing reset
    ========================================================================== */

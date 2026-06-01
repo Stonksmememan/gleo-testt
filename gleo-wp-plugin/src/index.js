@@ -11,7 +11,24 @@ const seoPluginName  = typeof gleoData !== 'undefined' ? gleoData.seoPluginName 
 /** Bot feed polling in Analytics (ms) — no Supabase Realtime; Node API + DB only. */
 const GLEO_BOT_FEED_POLL_MS = 60 * 60 * 1000;
 
+/** Six compressed GEO categories (MVP framework). */
+const GEO_CATEGORY_LABELS = {
+    writing: 'Content Writing & Style',
+    substance: 'Content Substance',
+    structure: 'Structure & Formatting',
+    technical: 'Technical & Schema',
+    trust: 'Trust & Brand Signals',
+    visibility: 'AI Visibility',
+};
+
 // ── Fix config ──────────────────────────────────────────────────────────────
+/** Reliable apply order: schema & structure before content blocks that depend on scan assets. */
+const FIX_APPLY_ORDER = [
+    'schema', 'schema_enrich', 'robots_txt_allow', 'opening_summary', 'structure',
+    'formatting', 'readability', 'content_depth', 'data_tables', 'faq',
+    'expert_quotes', 'image_alt_text',
+];
+
 const FIX_CONFIG = {
     schema:           { label: 'Deploy Schema',         needsInput: false, successMsg: 'JSON-LD schema markup is now active on this post, with expanded Organization wiring in your stored scan data.' },
     schema_enrich:    { label: 'Enrich structured data', needsInput: false, successMsg: 'Organization and publisher details were merged into your Gleo JSON-LD for this post.' },
@@ -23,7 +40,7 @@ const FIX_CONFIG = {
     faq:              { label: 'Add FAQ Block',         needsInput: false, successMsg: 'A contextual FAQ section (including Q&A) has been added to your post.' },
     authority:        { label: 'Add Statistics',        needsInput: true,  prompt: 'Paste one statistic and its source (one short paragraph):', inputType: 'text', successMsg: 'A statistics callout was added using your text.' },
     credibility:      { label: 'Add Sources',           needsInput: true,  prompt: 'Paste URLs to authoritative sources (one per line):', inputType: 'lines', successMsg: 'A Sources & References section has been added to your post.' },
-    opening_summary:  { label: 'Add opening summary',   needsInput: false, successMsg: 'An opening “In brief” summary block was added to the article.' },
+    opening_summary:  { label: 'Add AI-readable summary', needsInput: false, successMsg: 'A concise summary was saved for AI crawlers (in page metadata — not shown as a visible “In brief” box).' },
     image_alt_text:   { label: 'Improve image alt text', needsInput: false, successMsg: 'Missing or empty image descriptions were filled using your post title (and saved on the attachments where possible).' },
     robots_txt_allow: { label: 'Allow AI crawlers (robots.txt)', needsInput: false, successMsg: 'Your site robots.txt now includes explicit Allow rules for common AI crawlers (site-wide).' },
     expert_quotes:    { label: 'Add expert perspective', needsInput: false, successMsg: 'A short expert-perspective quote block was added to the article.' },
@@ -56,6 +73,32 @@ const IconChevron = ({ open }) => (
         <path d="M4.5 3L7.5 6L4.5 9"/>
     </svg>
 );
+
+// ── One-click optimize progress ─────────────────────────────────────────────
+const OptimizeProgressModal = ( { open, step, stepIndex, totalSteps, detail, onClose } ) => {
+    if ( ! open ) {
+        return null;
+    }
+    const pct = totalSteps > 0 ? Math.round( ( ( stepIndex + 1 ) / totalSteps ) * 100 ) : 0;
+    return (
+        <div className="gleo-modal-backdrop gleo-optimize-backdrop">
+            <div className="gleo-modal gleo-optimize-modal" onClick={ e => e.stopPropagation() }>
+                <h3>Optimizing your page</h3>
+                <p className="gleo-modal-prompt">Gleo applies surgical GEO fixes, reviews the live page with AI vision, then re-scores.</p>
+                <div className="gleo-optimize-progress-track">
+                    <div className="gleo-optimize-progress-fill" style={ { width: `${ pct }%` } }/>
+                </div>
+                <p className="gleo-optimize-step-label">{ step }</p>
+                { detail ? <p className="gleo-optimize-detail">{ detail }</p> : null }
+                { stepIndex >= totalSteps - 1 && onClose ? (
+                    <div className="gleo-modal-actions">
+                        <button type="button" className="gleo-btn gleo-btn-primary" onClick={ onClose }>Done</button>
+                    </div>
+                ) : null }
+            </div>
+        </div>
+    );
+};
 
 // ── Toast ────────────────────────────────────────────────────────────────────
 const SuccessToast = ({ message, onDismiss }) => {
@@ -295,7 +338,7 @@ const AnalyticsTab = () => {
 										} ) }
 									</div>
 									<p style={ { fontSize: 11, color: 'var(--fg-muted)', marginTop: 14, lineHeight: 1.5, borderTop: '1px solid var(--border-lt)', paddingTop: 10 } }>
-										Based on AI queries for your recent posts.
+										Estimate from Tavily search results for your post titles — useful for trends, not a literal ChatGPT mention rate.
 									</p>
 								</div>
 							);
@@ -342,6 +385,30 @@ const AnalyticsTab = () => {
 								</div>
 							) }
 						</div>
+					</div>
+				</div>
+			</div>
+
+			<div className="gleo-card gleo-analytics-feasibility">
+				<div className="gleo-card-header">
+					<h3>What we can measure honestly</h3>
+				</div>
+				<div className="gleo-card-body gleo-feasibility-list">
+					<div className="gleo-feasibility-row gleo-feasibility-yes">
+						<strong>Mention rate (proxy)</strong>
+						<p>Feasible as a directional estimate via search APIs (Tavily). Not the same as polling ChatGPT or Perplexity on every query.</p>
+					</div>
+					<div className="gleo-feasibility-row gleo-feasibility-yes">
+						<strong>Improvement over time</strong>
+						<p>Feasible when you re-scan on a schedule — we store GEO score and visibility history per post.</p>
+					</div>
+					<div className="gleo-feasibility-row gleo-feasibility-partial">
+						<strong>Source / citation tracking</strong>
+						<p>Partially feasible. We show which pages score well and AI landscape snippets; true “which chunk was cited” needs platform APIs we do not have yet.</p>
+					</div>
+					<div className="gleo-feasibility-row gleo-feasibility-yes">
+						<strong>AI crawler traffic</strong>
+						<p>Feasible on your WordPress site by detecting bot user-agents (GPTBot, ClaudeBot, etc.) when they hit your server.</p>
 					</div>
 				</div>
 			</div>
@@ -523,11 +590,6 @@ const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied } ) =>
                 ! arr.some( ( o, j ) => j !== i && o.el !== e.el && o.el.contains( e.el ) )
             );
         const possibleSteps = [
-            {
-                title: 'Quick Summary',
-                blurb: 'A concise opening summary helps AI systems capture the core context before reading the full page.',
-                find: () => root.querySelector( '.gleo-opening-summary-wrap' ) || root.querySelector( '.gleo-direct-answer' ),
-            },
             {
                 title: 'Figures & Evidence',
                 blurb: 'This block surfaces numbers and claims so AI answers and readers can cite your page as a credible source.',
@@ -780,7 +842,7 @@ const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied } ) =>
 };
 
 // ── Report Card ──────────────────────────────────────────────────────────────
-const GeoReportCard = ( { report, totalReportCards = 1 } ) => {
+const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
     const { post_id, result, preview_url: previewUrl } = report;
     const canCollapse = totalReportCards >= 3;
     const [expanded, setExpanded]             = useState( () => totalReportCards < 3 );
@@ -791,6 +853,12 @@ const GeoReportCard = ( { report, totalReportCards = 1 } ) => {
     const [showPreview, setShowPreview]       = useState(false);
     const [isApplyingAll, setIsApplyingAll]   = useState(false);
     const [showSchema, setShowSchema]         = useState(false);
+    const [optimizeOpen, setOptimizeOpen]       = useState(false);
+    const [optimizeStep, setOptimizeStep]       = useState('');
+    const [optimizeStepIdx, setOptimizeStepIdx] = useState(0);
+    const [optimizeDetail, setOptimizeDetail]   = useState('');
+    const [optimizeDone, setOptimizeDone]       = useState(false);
+    const OPTIMIZE_STEPS = 5;
 
     const siteUrl = typeof gleoData !== 'undefined' ? gleoData.siteUrl : '';
     const base = siteUrl ? siteUrl.replace( /\/$/, '' ) : '';
@@ -802,6 +870,9 @@ const GeoReportCard = ( { report, totalReportCards = 1 } ) => {
     const removeToast = id  => setToasts(p => p.filter(t => t.id !== id));
 
     const collectAutoFixTypesForItem = ( item ) => {
+        if ( item.noAutofix ) {
+            return [];
+        }
         const types = [];
         if ( item.fixType && FIX_CONFIG[ item.fixType ] && ! FIX_CONFIG[ item.fixType ].needsInput ) {
             types.push( item.fixType );
@@ -818,90 +889,97 @@ const GeoReportCard = ( { report, totalReportCards = 1 } ) => {
         const items = [];
         const cs = result.content_signals || {};
 
-        // ── 1. Technical Crawlability (15 pts) ──
+        // ── 1. Technical & Schema (35 pts) ──
         {
-            let score = 0;
-            if (!cs.has_meta_robots_block) score += 5;
-            if (cs.alt_text_coverage >= 90 || cs.image_count === 0) score += 5;
-            if (cs.has_llms_txt) score += 5;
+            let techScore = 0;
+            if (!cs.has_meta_robots_block) techScore += 5;
+            if (cs.alt_text_coverage >= 90 || cs.image_count === 0) techScore += 5;
+            if (cs.has_llms_txt) techScore += 5;
+            let schemaScore = 0;
+            if (cs.has_schema) schemaScore += 10;
+            if (cs.has_faq_schema) schemaScore += 5;
+            if (cs.has_org_schema) schemaScore += 5;
+            const score = techScore + schemaScore;
             const issues = [];
             if (cs.has_meta_robots_block) issues.push('Remove noindex/nofollow meta tag');
-            if (cs.image_count > 0 && cs.alt_text_coverage < 90) issues.push(`${cs.alt_text_coverage}% alt text coverage (aim for 90%+)`);
-            if (!cs.has_llms_txt) issues.push('Re-scan to verify /llms.txt in HTML (Gleo serves it and adds a head link)');
-            const msg = score === 15 ? 'All technical crawlability checks pass. AI bots can fully access your content.' : issues.join('. ') + '.';
-            const techAuto = [];
-            if (cs.image_count > 0 && cs.alt_text_coverage < 90) techAuto.push('image_alt_text');
-            if (score < 15) techAuto.push('robots_txt_allow');
-            const techAutoFiltered = techAuto.filter(ft => FIX_CONFIG[ft] && !FIX_CONFIG[ft].needsInput);
-            items.push({
-                priority: score === 15 ? 'positive' : score <= 5 ? 'critical' : 'medium',
-                area: 'Technical Crawlability', maxScore: 15, score, message: msg,
-                fixType: techAutoFiltered[0] || null,
-                extraFixes: techAutoFiltered.slice(1),
-                emoji: '🔍',
-            });
-        }
-
-        // ── 2. Structured Data & Schema (20 pts) ──
-        {
-            let score = 0;
-            if (cs.has_schema) score += 10;
-            if (cs.has_faq_schema) score += 5;
-            if (cs.has_org_schema) score += 5;
-            const issues = [];
+            if (cs.image_count > 0 && cs.alt_text_coverage < 90) issues.push(`${cs.alt_text_coverage}% alt text — add descriptive alt text`);
+            if (!cs.has_llms_txt) issues.push('Verify /llms.txt (Gleo serves it on your site)');
             if (!cs.has_schema) issues.push('Deploy JSON-LD schema markup');
             if (!cs.has_faq_schema) issues.push('Add FAQPage schema');
             if (!cs.has_org_schema) issues.push('Add Organization/Product schema');
-            const msg = score === 20 ? 'Full schema coverage. AI engines can fully understand your content structure.' : issues.join('. ') + '.';
+            const msg = score >= 33 ? 'Technical crawlability and schema are in good shape for AI engines.' : issues.join('. ') + '.';
+            const techAuto = [];
+            if (cs.image_count > 0 && cs.alt_text_coverage < 90) techAuto.push('image_alt_text');
+            if (techScore < 15) techAuto.push('robots_txt_allow');
             let schemaPrimary = null;
-            if (score < 20) {
+            if (schemaScore < 20) {
                 if (!cs.has_schema) schemaPrimary = 'schema';
                 else if (!cs.has_org_schema || !cs.has_faq_schema) schemaPrimary = 'schema_enrich';
             }
+            const auto = [ schemaPrimary, ...techAuto.filter( Boolean ) ].filter( ft => ft && FIX_CONFIG[ ft ] && ! FIX_CONFIG[ ft ].needsInput );
             items.push({
-                priority: score === 20 ? 'positive' : !cs.has_schema ? 'critical' : 'medium',
-                area: 'Structured Data & Schema', maxScore: 20, score, message: msg,
-                fixType: schemaPrimary,
-                extraFixes: [],
-                emoji: '🏗️',
+                priority: score >= 33 ? 'positive' : !cs.has_schema ? 'critical' : 'medium',
+                area: GEO_CATEGORY_LABELS.technical, maxScore: 35, score, message: msg,
+                fixType: auto[0] || null,
+                extraFixes: auto.slice( 1 ),
+                emoji: '⚙️',
             });
         }
 
-        // ── 3. Content Quality (30 pts) ──
+        // ── 2. Content Writing & Style (15 pts) ──
         {
             let score = 0;
-            if (cs.word_count >= 2000) score += 10;
-            else if (cs.word_count >= 1200) score += 7;
-            else if (cs.word_count >= 600) score += 4;
-            else if (cs.word_count > 0) score += 1;
             if (cs.has_direct_answer) score += 5;
             if (cs.has_tldr) score += 5;
             if (cs.has_conversational_queries) score += 3;
             if (cs.has_direct_answers) score += 2;
-            if (cs.word_count >= 800 && cs.has_statistics) score += 3;
-            if (cs.has_quotes) score += 2;
-            score = Math.min(30, score);
             const issues = [];
-            if (cs.word_count < 1200) issues.push(`${cs.word_count} words — aim for 1,200+`);
-            if (!cs.has_direct_answer) issues.push('Add a concise “In brief” answer at the top (inverted pyramid)');
-            if (!cs.has_tldr) issues.push('Add an opening “In brief” summary near the top');
-            if (!cs.has_conversational_queries) issues.push('Target conversational queries');
-            const msg = score >= 25 ? 'Strong content quality. Depth, direct answers, and conversational targeting are solid.' : issues.join('. ') + '.';
-            const cq = [];
-            if (!cs.has_direct_answer || !cs.has_tldr) cq.push('opening_summary');
-            if (cs.word_count < 1200) cq.push('content_depth');
-            cq.push('faq');
-            const cqF = cq.filter(ft => FIX_CONFIG[ft] && !FIX_CONFIG[ft].needsInput);
+            if (!cs.has_direct_answer) issues.push('Lead with a 60–100 word direct answer (conclusion-first)');
+            if (!cs.has_tldr) issues.push('Add an AI-readable page summary (hidden from visitors, available to crawlers)');
+            if (!cs.has_conversational_queries) issues.push('Target conversational, question-style phrasing');
+            if (cs.long_paragraphs > 0) issues.push(`${cs.long_paragraphs} long paragraph(s) — shorten for readability`);
+            const msg = score >= 13 ? 'Writing style is clear, direct, and easy for AI to quote.' : issues.join('. ') + '.';
+            const fixes = [];
+            if (!cs.has_direct_answer || !cs.has_tldr) fixes.push('opening_summary');
+            if (cs.long_paragraphs > 0) fixes.push('readability');
+            const fixF = fixes.filter(ft => FIX_CONFIG[ft] && !FIX_CONFIG[ft].needsInput);
             items.push({
-                priority: score >= 25 ? 'positive' : score <= 10 ? 'critical' : score <= 20 ? 'high' : 'medium',
-                area: 'Content Quality', maxScore: 30, score, message: msg,
-                fixType: score < 25 ? cqF[0] : null,
-                extraFixes: score < 25 ? cqF.slice(1) : [],
+                priority: score >= 13 ? 'positive' : score <= 5 ? 'high' : 'medium',
+                area: GEO_CATEGORY_LABELS.writing, maxScore: 15, score, message: msg,
+                fixType: fixF[0] || null,
+                extraFixes: fixF.slice(1),
                 emoji: '✍️',
             });
         }
 
-        // ── 4. Credibility (15 pts) ──
+        // ── 3. Content Substance (15 pts) ──
+        {
+            let score = 0;
+            if (cs.word_count >= 2000) score += 8;
+            else if (cs.word_count >= 1200) score += 6;
+            else if (cs.word_count >= 600) score += 3;
+            else if (cs.word_count > 0) score += 1;
+            if (cs.stat_count >= 1) score += 4;
+            if (cs.has_quotes) score += 3;
+            const issues = [];
+            if (cs.word_count < 1200) issues.push(`${cs.word_count} words — add depth, examples, or case studies`);
+            if (cs.stat_count < 1) issues.push('Add concrete statistics or outcomes');
+            if (!cs.has_quotes) issues.push('Include testimonials or expert quotes');
+            const msg = score >= 13 ? 'Strong topical depth and credibility signals in the body.' : issues.join('. ') + '.';
+            const sub = [];
+            if (cs.word_count < 1200) sub.push('content_depth');
+            if (!cs.has_quotes) sub.push('expert_quotes');
+            const subF = sub.filter(ft => FIX_CONFIG[ft] && !FIX_CONFIG[ft].needsInput);
+            items.push({
+                priority: score >= 13 ? 'positive' : score <= 5 ? 'high' : 'medium',
+                area: GEO_CATEGORY_LABELS.substance, maxScore: 15, score, message: msg,
+                fixType: subF[0] || null,
+                extraFixes: subF.slice(1),
+                emoji: '📚',
+            });
+        }
+
+        // ── 4. Trust & Brand Signals (15 pts) ──
         {
             let score = 0;
             if (cs.stat_count >= 3) score += 5;
@@ -915,19 +993,18 @@ const GeoReportCard = ( { report, totalReportCards = 1 } ) => {
             if (!cs.has_quotes) issues.push('Include expert quotes or testimonials');
             const msg = score === 15 ? 'Excellent credibility signals. Statistics, citations, and expert quotes are present.' : issues.join('. ') + '.';
             const cred = [];
-            if (cs.stat_count < 3) cred.push('authority');
             if (!cs.has_quotes) cred.push('expert_quotes');
             const credF = cred.filter(ft => FIX_CONFIG[ft] && !FIX_CONFIG[ft].needsInput);
             items.push({
                 priority: score === 15 ? 'positive' : score <= 5 ? 'high' : 'medium',
-                area: 'Credibility', maxScore: 15, score, message: msg,
+                area: GEO_CATEGORY_LABELS.trust, maxScore: 15, score, message: msg,
                 fixType: score < 15 ? credF[0] : null,
                 extraFixes: score < 15 ? credF.slice(1) : [],
-                emoji: '📊',
+                emoji: '🛡️',
             });
         }
 
-        // ── 5. AI-Specific Formatting (20 pts) ──
+        // ── 5. Structure & Formatting (20 pts) ──
         {
             let score = 0;
             if (cs.heading_count >= 4) score += 5;
@@ -948,10 +1025,32 @@ const GeoReportCard = ( { report, totalReportCards = 1 } ) => {
             const msg = score === 20 ? 'Excellent AI-specific formatting. Content is fully optimized for AI extraction.' : issues.join('. ') + '.';
             items.push({
                 priority: score === 20 ? 'positive' : score <= 8 ? 'high' : 'medium',
-                area: 'AI-Specific Formatting', maxScore: 20, score, message: msg,
+                area: GEO_CATEGORY_LABELS.structure, maxScore: 20, score, message: msg,
                 fixType: score < 20 ? 'structure' : null,
-                extraFixes: score < 20 ? ['formatting', 'readability', 'faq', 'data_tables'] : [],
-                emoji: '🤖',
+                extraFixes: score < 20 ? ['formatting', 'faq', 'data_tables'] : [],
+                emoji: '📐',
+            });
+        }
+
+        // ── 6. AI Visibility (informational, 0–10) ──
+        {
+            const brand = typeof result.brand_inclusion_rate === 'number' ? result.brand_inclusion_rate : 0;
+            const pct = Math.round( ( brand / 10 ) * 100 );
+            const msg = brand >= 7
+                ? `Your site appears in roughly ${pct}% of sampled AI search results for this topic (Tavily proxy — not ChatGPT/Perplexity verbatim).`
+                : brand >= 3
+                    ? `Moderate visibility (~${pct}% of sampled results). Keep optimizing content and schema.`
+                    : `Low visibility in sampled AI results (~${pct}%). GEO fixes and fresh content can help over time.`;
+            items.push({
+                priority: brand >= 7 ? 'positive' : brand >= 3 ? 'medium' : 'high',
+                area: GEO_CATEGORY_LABELS.visibility,
+                maxScore: 10,
+                score: brand,
+                message: msg,
+                fixType: null,
+                extraFixes: [],
+                emoji: '👁️',
+                noAutofix: true,
             });
         }
 
@@ -973,7 +1072,13 @@ const GeoReportCard = ( { report, totalReportCards = 1 } ) => {
         const data = { post_id, type: fixType, enabled: true };
         if (userInput !== undefined) data.user_input = userInput;
         return apiFetch({ path: '/gleo/v1/apply', method: 'POST', data })
-            .then(() => { setAppliedTypes(p => ({ ...p, [fixType]: true })); addToast(config?.successMsg || `${fixType} applied.`); })
+            .then(( res ) => {
+                setAppliedTypes( p => ( { ...p, [ fixType ]: true } ) );
+                if ( typeof res?.geo_score === 'number' && onReportUpdated ) {
+                    onReportUpdated( post_id, { ...result, geo_score: res.geo_score } );
+                }
+                addToast( config?.successMsg || `${ fixType } applied.` );
+            } )
             .catch(err => { addToast(`Failed: ${err.message || 'Unknown error'}`); })
             .finally(() => setApplyingTypes(p => ({ ...p, [fixType]: false })));
     };
@@ -1007,34 +1112,151 @@ const GeoReportCard = ( { report, totalReportCards = 1 } ) => {
     };
 
     const handleApplyAll = async () => {
-        setIsApplyingAll(true);
-        const names = [];
-        let failed = false;
-        // Collect all unique fix types from items (primary + extra)
-        const allFixTypes = new Set();
-        for (const item of allItems) {
-            if (item.fixType && !item.applied && !FIX_CONFIG[item.fixType]?.needsInput) allFixTypes.add(item.fixType);
-            if (item.extraFixes) item.extraFixes.forEach(ft => { if (FIX_CONFIG[ft] && !FIX_CONFIG[ft].needsInput) allFixTypes.add(ft); });
+        setIsApplyingAll( true );
+        const failed = await applyFixTypes( collectAllAutoFixTypes() );
+        if ( failed.length === 0 ) {
+            addToast( 'All fixes applied. GEO score updated — re-scan after publishing if the live page uses a cache.' );
+        } else {
+            const labels = failed.map( ft => FIX_CONFIG[ ft ]?.label || ft ).join( ', ' );
+            addToast( `Could not apply: ${ labels }. Other fixes were saved.` );
         }
-        for (const ft of allFixTypes) {
-            if (appliedTypes[ft]) continue;
-            names.push(FIX_CONFIG[ft]?.label || ft);
-            setApplyingTypes(p => ({ ...p, [ft]: true }));
-            try {
-                await apiFetch({ path: '/gleo/v1/apply', method: 'POST', data: { post_id, type: ft, enabled: true } });
-                await new Promise(r => setTimeout(r, 80));
-                setAppliedTypes(p => ({ ...p, [ft]: true }));
-            } catch(err) {
-                failed = true;
-            } finally {
-                setApplyingTypes(p => ({ ...p, [ft]: false }));
+        setIsApplyingAll( false );
+    };
+
+    const applyOneFix = async ( ft, attempt = 0 ) => {
+        const res = await apiFetch( { path: '/gleo/v1/apply', method: 'POST', data: { post_id, type: ft, enabled: true } } );
+        if ( typeof res?.geo_score === 'number' && onReportUpdated ) {
+            onReportUpdated( post_id, { ...result, geo_score: res.geo_score } );
+        }
+        return res;
+    };
+
+    const applyFixTypes = async ( types ) => {
+        const sorted = [ ...types ].sort( ( a, b ) => {
+            const ia = FIX_APPLY_ORDER.indexOf( a );
+            const ib = FIX_APPLY_ORDER.indexOf( b );
+            return ( ia < 0 ? 99 : ia ) - ( ib < 0 ? 99 : ib );
+        } );
+        const failed = [];
+        for ( const ft of sorted ) {
+            if ( appliedTypes[ ft ] ) {
+                continue;
+            }
+            setApplyingTypes( p => ( { ...p, [ ft ]: true } ) );
+            let ok = false;
+            for ( let attempt = 0; attempt < 2 && ! ok; attempt++ ) {
+                try {
+                    await applyOneFix( ft, attempt );
+                    await new Promise( r => setTimeout( r, 120 ) );
+                    setAppliedTypes( p => ( { ...p, [ ft ]: true } ) );
+                    ok = true;
+                } catch ( e ) {
+                    if ( attempt === 1 ) {
+                        failed.push( ft );
+                    } else {
+                        await new Promise( r => setTimeout( r, 400 ) );
+                    }
+                }
+            }
+            setApplyingTypes( p => ( { ...p, [ ft ]: false } ) );
+        }
+        return failed;
+    };
+
+    const collectAllAutoFixTypes = () => {
+        const allFixTypes = new Set();
+        for ( const item of allItems ) {
+            if ( item.noAutofix ) {
+                continue;
+            }
+            if ( item.fixType && ! FIX_CONFIG[ item.fixType ]?.needsInput ) {
+                allFixTypes.add( item.fixType );
+            }
+            ( item.extraFixes || [] ).forEach( ft => {
+                if ( FIX_CONFIG[ ft ] && ! FIX_CONFIG[ ft ].needsInput ) {
+                    allFixTypes.add( ft );
+                }
+            } );
+        }
+        return [ ...allFixTypes ];
+    };
+
+    const pollRescanResult = async ( prevScore ) => {
+        for ( let i = 0; i < 45; i++ ) {
+            await new Promise( r => setTimeout( r, 3000 ) );
+            const res = await apiFetch( { path: '/gleo/v1/scan/status' } );
+            const row = ( res.results || [] ).find( r => r.post_id === post_id );
+            if ( row?.result && ! res.is_scanning ) {
+                return row.result;
+            }
+            if ( row?.result?.geo_score != null && ( prevScore === null || row.result.geo_score >= prevScore ) ) {
+                return row.result;
             }
         }
-        
-        if (names.length > 0) {
-            addToast(failed ? 'Some fixes failed.' : `Applied: ${names.join(', ')}`);
+        return null;
+    };
+
+    const handleOneClickOptimize = async () => {
+        const prevScore = typeof result.geo_score === 'number' ? result.geo_score : null;
+        setOptimizeOpen( true );
+        setOptimizeDone( false );
+        setOptimizeStepIdx( 0 );
+        setOptimizeDetail( '' );
+
+        const setStep = ( idx, label, detail = '' ) => {
+            setOptimizeStepIdx( idx );
+            setOptimizeStep( label );
+            setOptimizeDetail( detail );
+        };
+
+        try {
+            setStep( 0, 'Applying GEO fixes…' );
+            const failedFixes = await applyFixTypes( collectAllAutoFixTypes() );
+            if ( failedFixes.length > 0 ) {
+                setOptimizeDetail( `Some steps could not run (${ failedFixes.join( ', ' ) }); continuing with the rest.` );
+            }
+
+            setStep( 1, 'Capturing live preview…' );
+            setStep( 2, 'AI visual review (Gemini)…' );
+            let critique = null;
+            try {
+                const critRes = await apiFetch( { path: '/gleo/v1/optimize/critique', method: 'POST', data: { post_id } } );
+                critique = critRes?.data || null;
+            } catch ( e ) {
+                setOptimizeDetail( 'Vision review skipped — Node API may be offline or Playwright not installed.' );
+            }
+
+            if ( critique?.follow_up_fix_types?.length ) {
+                setStep( 3, 'Applying refinements from visual review…', critique.summary || '' );
+                await applyFixTypes( critique.follow_up_fix_types );
+            } else {
+                setStep( 3, 'No extra refinements needed', critique?.summary || 'Page passed visual review.' );
+            }
+
+            setStep( 4, 'Re-scoring your page…' );
+            await apiFetch( { path: '/gleo/v1/scan/rescan-post', method: 'POST', data: { post_id } } );
+            const fresh = await pollRescanResult( prevScore );
+            if ( fresh && onReportUpdated ) {
+                onReportUpdated( post_id, fresh );
+            } else if ( onReportUpdated && typeof result.geo_score === 'number' ) {
+                const status = await apiFetch( { path: '/gleo/v1/scan/status' } );
+                const row = ( status.results || [] ).find( r => r.post_id === post_id );
+                if ( row?.result ) {
+                    onReportUpdated( post_id, row.result );
+                }
+            }
+            const newScore = fresh?.geo_score;
+            setOptimizeDetail(
+                newScore != null
+                    ? `Done. GEO score is now ${ newScore }${ prevScore != null ? ` (was ${ prevScore })` : '' }.${ critique?.visual_score != null ? ` Visual polish: ${ critique.visual_score }/10.` : '' }`
+                    : ( critique?.summary || 'Optimization complete. Re-run scan if the score did not update.' )
+            );
+            addToast( 'One-click optimization complete.' );
+        } catch ( err ) {
+            setOptimizeDetail( err.message || 'Optimization failed.' );
+            addToast( `Optimization error: ${ err.message || 'Unknown' }` );
         }
-        setIsApplyingAll(false);
+        setOptimizeDone( true );
     };
 
     const allAutoFixed = ( () => {
@@ -1088,8 +1310,17 @@ const GeoReportCard = ( { report, totalReportCards = 1 } ) => {
                 { canCollapse ? <IconChevron open={expanded}/> : <span className="gleo-report-chevron-spacer" aria-hidden="true"/> }
             </div>
 
+            <OptimizeProgressModal
+                open={ optimizeOpen }
+                step={ optimizeStep }
+                stepIndex={ optimizeStepIdx }
+                totalSteps={ OPTIMIZE_STEPS }
+                detail={ optimizeDetail }
+                onClose={ optimizeDone ? () => setOptimizeOpen( false ) : null }
+            />
+
             <div className="gleo-report-workflow">
-                <p className="gleo-workflow-label">Recommended: preview your page, then apply fixes.</p>
+                <p className="gleo-workflow-label">One-click optimize: fixes → AI vision review → re-score.</p>
                 <div className="gleo-workflow-actions">
                     { postUrl ? (
                         <button type="button" className="gleo-btn gleo-btn-outline gleo-workflow-btn-preview"
@@ -1098,11 +1329,15 @@ const GeoReportCard = ( { report, totalReportCards = 1 } ) => {
                         </button>
                     ) : null }
                     <button type="button" className="gleo-btn gleo-btn-primary gleo-workflow-btn-apply"
-                        onClick={ handleApplyAll } disabled={ allAutoFixed || isApplyingAll }>
-                        { isApplyingAll ? 'Applying…' : ( allAutoFixed ? 'All auto-fixes applied' : 'Apply all auto-fixes' ) }
+                        onClick={ handleOneClickOptimize } disabled={ optimizeOpen && ! optimizeDone }>
+                        { optimizeOpen && ! optimizeDone ? 'Optimizing…' : 'One-click optimize' }
+                    </button>
+                    <button type="button" className="gleo-btn gleo-btn-outline gleo-workflow-btn-apply"
+                        onClick={ handleApplyAll } disabled={ allAutoFixed || isApplyingAll || ( optimizeOpen && ! optimizeDone ) }>
+                        { isApplyingAll ? 'Applying…' : 'Apply fixes only' }
                     </button>
                 </div>
-                <p className="gleo-workflow-hint">Category fixes that need your input stay one click each below.</p>
+                <p className="gleo-workflow-hint">Fixes that need your input (statistics, sources) stay one click each below. Requires gleo-node-api + Playwright for vision review.</p>
             </div>
 
             { showReportBody && (
@@ -1176,6 +1411,8 @@ const GeoReportCard = ( { report, totalReportCards = 1 } ) => {
                                         <div className="gleo-issue-action" style={{ paddingTop: 10, display: 'flex', justifyContent: 'flex-start' }}>
                                             {item.applied ? (
                                                 <span className="gleo-status-good">✓ Fixed</span>
+                                            ) : item.noAutofix ? (
+                                                <span className="gleo-status-good" style={{ color: 'var(--fg-muted)' }}>Tracked via scan</span>
                                             ) : item.fixType ? (
                                                 <button className="gleo-btn gleo-btn-outline"
                                                     style={{ fontSize: 11, padding: '4px 12px' }}
@@ -1449,7 +1686,16 @@ const App = () => {
                                     Results — {scanResults.length} post{scanResults.length !== 1 ? 's' : ''}
                                 </div>
                                 { scanResults.map( r => (
-                                    <GeoReportCard key={ r.post_id } report={ r } totalReportCards={ scanResults.length }/>
+                                    <GeoReportCard
+                                        key={ r.post_id }
+                                        report={ r }
+                                        totalReportCards={ scanResults.length }
+                                        onReportUpdated={ ( pid, fresh ) => {
+                                            setScanResults( prev => prev.map( row => (
+                                                row.post_id === pid ? { ...row, result: fresh } : row
+                                            ) ) );
+                                        } }
+                                    />
                                 ) ) }
                             </>
                         )}
