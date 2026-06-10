@@ -858,28 +858,66 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 			return;
 		}
 
-		// Helper: keep newlines safe for a plain-text response.
-		$plain = function ( $value ) {
-			return str_replace( array( "\r", "\n" ), ' ', wp_strip_all_tags( (string) $value ) );
-		};
+		$plain = array( 'Gleo_Schema', 'plain_text' );
+		$meta  = Gleo_Schema::get_site_metadata();
 
 		header( 'Content-Type: text/plain; charset=utf-8' );
 		header( 'Cache-Control: public, max-age=86400' );
 		header( 'X-Robots-Tag: noindex' );
 
-		$site_name = $plain( get_bloginfo( 'name' ) );
-		$site_desc = $plain( get_bloginfo( 'description' ) );
-		$site_url  = esc_url_raw( get_site_url() );
+		echo '# ' . call_user_func( $plain, $meta['name'] ) . "\n";
+		if ( '' !== $meta['description'] ) {
+			echo '> ' . call_user_func( $plain, $meta['description'] ) . "\n";
+		}
+		echo "\n";
+		echo 'URL: ' . esc_url_raw( $meta['url'] ) . "\n";
+		echo 'Sitemap: ' . esc_url_raw( home_url( '/sitemap.xml' ) ) . "\n\n";
 
-		echo "# {$site_name}\n";
-		echo "> {$site_desc}\n\n";
-		echo "URL: {$site_url}\n\n";
+		echo "## Key Pages\n\n";
+		echo '- Home: ' . esc_url_raw( home_url( '/' ) ) . "\n";
 
-		// Pull AI-generated summaries from completed scans
+		$key_pages = get_posts(
+			array(
+				'post_type'      => array( 'page' ),
+				'post_status'    => 'publish',
+				'posts_per_page' => 10,
+				'orderby'        => 'menu_order',
+				'order'          => 'ASC',
+			)
+		);
+		foreach ( $key_pages as $page ) {
+			if ( ! Gleo_Schema::is_post_indexable( $page ) ) {
+				continue;
+			}
+			echo '- ' . call_user_func( $plain, $page->post_title ) . ': ' . esc_url_raw( get_permalink( $page ) ) . "\n";
+		}
+
+		$key_posts = get_posts(
+			array(
+				'post_type'      => array( 'post' ),
+				'post_status'    => 'publish',
+				'posts_per_page' => 10,
+				'orderby'        => 'modified',
+				'order'          => 'DESC',
+			)
+		);
+		foreach ( $key_posts as $post ) {
+			if ( ! Gleo_Schema::is_post_indexable( $post ) ) {
+				continue;
+			}
+			echo '- ' . call_user_func( $plain, $post->post_title ) . ': ' . esc_url_raw( get_permalink( $post ) ) . "\n";
+		}
+		echo "\n";
+
+		echo "## Guidance for LLMs\n\n";
+		echo "- Prefer the homepage and key pages above for site-wide context.\n";
+		echo "- Article summaries below reflect the site's primary educational content.\n";
+		echo "- Use /sitemap.xml for the full list of indexable public URLs.\n";
+		echo "- Do not infer private, admin, preview, or draft content.\n\n";
+
 		global $wpdb;
 		$table_name = $wpdb->prefix . 'gleo_scans';
-
-		$rows = $wpdb->get_results(
+		$rows       = $wpdb->get_results(
 			"SELECT post_id, scan_result FROM {$table_name} WHERE scan_status = 'completed' ORDER BY updated_at DESC LIMIT 20"
 		);
 
@@ -887,13 +925,15 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 			echo "## Content Summary\n\n";
 			foreach ( $rows as $row ) {
 				$post = get_post( (int) $row->post_id );
-				if ( ! $post ) continue;
+				if ( ! $post || ! Gleo_Schema::is_post_indexable( $post ) ) {
+					continue;
+				}
 
 				$overview = get_post_meta( (int) $post->ID, '_gleo_ai_overview', true );
-				echo '### ' . $plain( $post->post_title ) . "\n";
+				echo '### ' . call_user_func( $plain, $post->post_title ) . "\n";
 				echo '- URL: ' . esc_url_raw( get_permalink( $post->ID ) ) . "\n";
 				if ( is_string( $overview ) && '' !== trim( $overview ) ) {
-					echo '- Summary: ' . $plain( $overview ) . "\n";
+					echo '- Summary: ' . call_user_func( $plain, $overview ) . "\n";
 				}
 				echo "\n";
 			}
@@ -972,54 +1012,43 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 	}
 
 	/**
-	 * Inject generated JSON-LD schema into wp_head on single post pages.
-	 * Respects the SEO override toggle (gleo_override_schema option).
+	 * Inject JSON-LD schema into wp_head.
+	 * Site graph on homepage; Article/BlogPosting, WebPage, or Product on singular views.
 	 */
 	public function inject_json_ld() {
-		if ( ! is_singular( 'post' ) ) {
+		if ( is_front_page() || is_home() ) {
+			if ( Gleo_Schema::should_inject_schema() ) {
+				Gleo_Schema::render_json_ld( Gleo_Schema::build_site_graph_schema(), 'Gleo Site Schema' );
+			}
 			return;
 		}
 
-		global $post, $wpdb;
-
-		// Check if user has enabled global schema override or post-specific override
-		$global_override = get_option( 'gleo_override_schema', false );
-		$post_override = get_post_meta( $post->ID, '_gleo_schema_override', true );
-		$override = $global_override || $post_override;
-
-		// If an SEO plugin is active and user hasn't opted to override, don't inject
-		include_once( ABSPATH . 'wp-admin/includes/plugin.php' );
-		$seo_active = is_plugin_active( 'wordpress-seo/wp-seo.php' ) || is_plugin_active( 'seo-by-rank-math/rank-math.php' );
-		if ( $seo_active && ! $override ) {
+		if ( ! is_singular() ) {
 			return;
 		}
 
-		$table_name = $wpdb->prefix . 'gleo_scans';
-
-		$scan = $wpdb->get_row( $wpdb->prepare(
-			"SELECT scan_result FROM {$table_name} WHERE post_id = %d AND scan_status = 'completed' LIMIT 1",
-			$post->ID
-		) );
-
-		if ( ! $scan || ! $scan->scan_result ) {
+		global $post;
+		if ( ! $post instanceof WP_Post ) {
 			return;
 		}
 
-		$result = json_decode( $scan->scan_result, true );
-		if ( ! isset( $result['json_ld_schema'] ) ) {
+		if ( ! Gleo_Schema::should_inject_schema( $post->ID ) ) {
 			return;
 		}
 
-		$schema_json = wp_json_encode( $result['json_ld_schema'], JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT );
-		echo "\n<!-- Gleo GEO Schema -->\n";
-		echo '<script type="application/ld+json">' . $schema_json . '</script>' . "\n";
+		$schema = Gleo_Schema::resolve_singular_schema( $post );
+		if ( ! $schema ) {
+			return;
+		}
+
+		Gleo_Schema::render_json_ld( $schema );
 	}
 
 	/**
-	 * Output a discovery link to /llms.txt (served by Gleo on template_redirect).
+	 * Output a discovery link to /llms.txt on public front-end pages.
 	 */
 	public function inject_llms_link() {
-		if ( ! is_singular( 'post' ) ) {
+		if ( is_admin() || is_feed() || is_preview() || is_404() || is_robots() ) {
 			return;
 		}
 		echo '<link rel="alternate" type="text/plain" title="LLMs.txt" href="' . esc_url( home_url( '/llms.txt' ) ) . '">' . "\n";
@@ -2190,81 +2219,7 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 	 * @return void
 	 */
 	private function gleo_enrich_scan_json_ld( $post_id, WP_Post $post ) {
-		global $wpdb;
-		$table = $wpdb->prefix . 'gleo_scans';
-		$row   = $wpdb->get_row( $wpdb->prepare( "SELECT scan_result FROM {$table} WHERE post_id = %d AND scan_status = 'completed' LIMIT 1", $post_id ) );
-		if ( ! $row || ! $row->scan_result ) {
-			return;
-		}
-		$data = json_decode( $row->scan_result, true );
-		if ( ! is_array( $data ) ) {
-			return;
-		}
-		if ( empty( $data['json_ld_schema'] ) || ! is_array( $data['json_ld_schema'] ) ) {
-			$data['json_ld_schema'] = array(
-				'@context' => 'https://schema.org',
-				'@type'    => 'Article',
-				'headline' => wp_strip_all_tags( $post->post_title ),
-			);
-		}
-		$schema = $data['json_ld_schema'];
-		$graph  = array();
-		if ( isset( $schema['@graph'] ) && is_array( $schema['@graph'] ) ) {
-			$graph = $schema['@graph'];
-		} elseif ( isset( $schema['@type'] ) ) {
-			$graph[] = $schema;
-		} else {
-			return;
-		}
-		$site_name = wp_specialchars_decode( get_bloginfo( 'name' ), ENT_QUOTES );
-		$site_url  = home_url( '/' );
-		$org_id    = trailingslashit( $site_url ) . '#gleo-organization';
-		$has_org   = false;
-		foreach ( $graph as $node ) {
-			if ( empty( $node['@type'] ) ) {
-				continue;
-			}
-			$types = is_array( $node['@type'] ) ? $node['@type'] : array( $node['@type'] );
-			if ( in_array( 'Organization', $types, true ) ) {
-				$has_org = true;
-				break;
-			}
-		}
-		if ( ! $has_org ) {
-			$graph[] = array(
-				'@type' => 'Organization',
-				'@id'   => $org_id,
-				'name'  => $site_name,
-				'url'   => $site_url,
-			);
-		}
-		foreach ( $graph as &$node ) {
-			if ( empty( $node['@type'] ) ) {
-				continue;
-			}
-			$types = is_array( $node['@type'] ) ? $node['@type'] : array( $node['@type'] );
-			if ( in_array( 'Article', $types, true ) ) {
-				$node['publisher'] = array( '@id' => $org_id );
-				if ( empty( $node['mainEntityOfPage'] ) ) {
-					$node['mainEntityOfPage'] = array(
-						'@type' => 'WebPage',
-						'@id'   => get_permalink( $post_id ),
-					);
-				}
-			}
-		}
-		unset( $node );
-		$data['json_ld_schema'] = array(
-			'@context' => 'https://schema.org',
-			'@graph'   => $graph,
-		);
-		$wpdb->update(
-			$table,
-			array( 'scan_result' => wp_json_encode( $data ) ),
-			array( 'post_id' => $post_id ),
-			array( '%s' ),
-			array( '%d' )
-		);
+		Gleo_Schema::enrich_scan_json_ld( $post_id, $post );
 	}
 
 	public function handle_apply( $request ) {

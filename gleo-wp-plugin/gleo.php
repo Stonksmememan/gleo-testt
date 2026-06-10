@@ -74,9 +74,54 @@ function gleo_register_settings() {
 		'show_in_rest'      => true,
 		'default'           => false,
 	) );
+
+	register_setting( 'gleo_settings', 'gleo_org_logo_url', array(
+		'type'              => 'string',
+		'sanitize_callback' => 'esc_url_raw',
+		'show_in_rest'      => true,
+		'default'           => '',
+	) );
+
+	register_setting( 'gleo_settings', 'gleo_social_links', array(
+		'type'              => 'string',
+		'sanitize_callback' => 'gleo_sanitize_social_links_json',
+		'show_in_rest'      => true,
+		'default'           => '',
+	) );
+}
+
+/**
+ * Sanitize JSON array of social profile URLs for gleo_social_links.
+ *
+ * @param mixed $value Raw option value.
+ * @return string JSON-encoded URL list.
+ */
+function gleo_sanitize_social_links_json( $value ) {
+	$links = array();
+	if ( is_string( $value ) && '' !== trim( $value ) ) {
+		$decoded = json_decode( $value, true );
+		if ( is_array( $decoded ) ) {
+			foreach ( $decoded as $link ) {
+				$link = esc_url_raw( (string) $link );
+				if ( '' !== $link ) {
+					$links[] = $link;
+				}
+			}
+		}
+	} elseif ( is_array( $value ) ) {
+		foreach ( $value as $link ) {
+			$link = esc_url_raw( (string) $link );
+			if ( '' !== $link ) {
+				$links[] = $link;
+			}
+		}
+	}
+	return wp_json_encode( array_values( array_unique( $links ) ) );
 }
 
 // Include API Client & Modules
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-gleo-schema.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-gleo-sitemap.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-gleo-api-client.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-gleo-batch-scanner.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-gleo-optimize.php';

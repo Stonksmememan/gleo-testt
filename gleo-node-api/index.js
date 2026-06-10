@@ -10,6 +10,12 @@ const { initSOVCron } = require('./lib/sov-simulator');
 
 const app = express();
 const port = process.env.PORT || 8765;
+// #region agent log
+const debugLog = (hypothesisId, message, data = {}) => {
+  if (typeof fetch !== 'function') return;
+  fetch('http://127.0.0.1:7898/ingest/7384af93-f840-4225-9885-a251d9e6d233',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'570b9f'},body:JSON.stringify({sessionId:'570b9f',runId:'pre-fix',hypothesisId,location:'gleo-node-api/index.js',message,data,timestamp:Date.now()})}).catch(()=>{});
+};
+// #endregion
 
 // CORS allow-list (use ALLOWED_ORIGINS env, comma-separated). Defaults are dev-friendly.
 const allowedOrigins = (process.env.ALLOWED_ORIGINS || '')
@@ -27,6 +33,18 @@ app.use(cors({
   },
   credentials: true,
 }));
+
+// #region agent log
+app.use((req, res, next) => {
+  debugLog('A,B,C', 'Node API received inbound request', {
+    method: req.method,
+    path: req.path,
+    host: req.headers.host || '',
+    origin: req.headers.origin || '',
+  });
+  next();
+});
+// #endregion
 
 // Need access to the raw payload body for HMAC calculation
 app.use(express.json({
@@ -156,6 +174,13 @@ app.post('/v1/analyze/start', verifySignature, (req, res) => {
 });
 
 app.listen(port, () => {
+  // #region agent log
+  debugLog('A,C', 'Node API listener started', {
+    port: String(port),
+    env_port_set: Boolean(process.env.PORT),
+    allowed_origins_count: allowedOrigins.length,
+  });
+  // #endregion
   console.log(`Gleo Node API listening on port ${port}`);
   initSOVCron();
 });
