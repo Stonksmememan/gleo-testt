@@ -24,19 +24,17 @@ const GEO_CATEGORY_LABELS = {
 // ── Fix config ──────────────────────────────────────────────────────────────
 /** Reliable apply order: schema & structure before content blocks that depend on scan assets. */
 const FIX_APPLY_ORDER = [
-    'schema', 'schema_enrich', 'robots_txt_allow', 'opening_summary', 'structure',
-    'formatting', 'readability', 'content_depth', 'data_tables', 'faq',
+    'schema', 'schema_enrich', 'robots_txt_allow', 'opening_summary',
+    'formatting', 'readability', 'content_depth', 'faq',
     'expert_quotes', 'image_alt_text',
 ];
 
 const FIX_CONFIG = {
     schema:           { label: 'Deploy Schema',         needsInput: false, successMsg: 'JSON-LD schema markup is now active on this post, with expanded Organization wiring in your stored scan data.' },
     schema_enrich:    { label: 'Enrich structured data', needsInput: false, successMsg: 'Organization and publisher details were merged into your Gleo JSON-LD for this post.' },
-    structure:        { label: 'Add Headings',          needsInput: false, successMsg: 'Semantic H2 headings have been added at natural break points in the article.' },
     formatting:       { label: 'Add Lists',             needsInput: false, successMsg: 'Dense paragraphs have been converted into bulleted lists.' },
     readability:      { label: 'Shorten Paragraphs',    needsInput: false, successMsg: 'Long paragraphs (80+ words) have been split into shorter chunks.' },
     content_depth:    { label: 'Expand Content',        needsInput: false, successMsg: 'In-depth paragraphs have been added to strengthen content quality.' },
-    data_tables:      { label: 'Add Table',             needsInput: false, successMsg: 'A contextual comparison table has been added to your post.' },
     faq:              { label: 'Add FAQ Block',         needsInput: false, successMsg: 'A contextual FAQ section (including Q&A) has been added to your post.' },
     authority:        { label: 'Add Statistics',        needsInput: true,  prompt: 'Paste one statistic and its source (one short paragraph):', inputType: 'text', successMsg: 'A statistics callout was added using your text.' },
     credibility:      { label: 'Add Sources',           needsInput: true,  prompt: 'Paste URLs to authoritative sources (one per line):', inputType: 'lines', successMsg: 'A Sources & References section has been added to your post.' },
@@ -567,7 +565,7 @@ const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied } ) =>
                 return;
             }
             const root = gleoPreviewContentRoot( doc );
-            const first = root.querySelector( '.gleo-table-block, .gleo-qa-block, .gleo-faq-wrap, h2.wp-block-heading.gleo-section-heading, h2.wp-block-heading' );
+            const first = root.querySelector( '.gleo-qa-block, .gleo-faq-wrap, .gleo-sources-block, h2.wp-block-heading' );
             if ( first ) {
                 first.scrollIntoView( { behavior: 'smooth', block: 'center' } );
             }
@@ -596,9 +594,20 @@ const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied } ) =>
                 find: () => root.querySelector( '.gleo-stats-callout' ),
             },
             {
-                title: 'Comparison Layout',
-                blurb: 'Side‑by‑side rows give models a scannable summary of options, which often gets quoted in AI overviews.',
-                find: () => root.querySelector( '.gleo-table-block' ),
+                title: 'Reference Signals',
+                blurb: (
+                    <>
+                        The <strong style={ { color: '#7dd3fc', fontWeight: 700 } }>Sources &amp; References block</strong> is one of the strongest trust signals for AI — models actively prefer pages that cite verifiable, external sources when composing answers.
+                    </>
+                ),
+                find: () => {
+                    const block = root.querySelector( '.gleo-sources-block' );
+                    if ( block ) return block;
+                    const h2s = root.querySelectorAll( 'h2.wp-block-heading, h2' );
+                    const sourceHeading = Array.from( h2s ).find( h => /sources|references/i.test( h.textContent || '' ) );
+                    if ( sourceHeading ) return sourceHeading;
+                    return root.querySelector( 'ol.wp-block-list, ul.wp-block-list' );
+                },
             },
             {
                 title: 'Direct Answers',
@@ -610,34 +619,13 @@ const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied } ) =>
                 find: () => root.querySelector( '.gleo-qa-block' ),
             },
             {
-                title: 'Common Questions',
+                title: 'FAQ',
                 blurb: (
                     <>
-                        The <strong style={ { color: '#7dd3fc', fontWeight: 700 } }>FAQ accordion</strong> (highlighted) gives expandable answers that target long‑tail queries and clear structured text for crawlers.
+                        The <strong style={ { color: '#7dd3fc', fontWeight: 700 } }>FAQ block</strong> answers the real questions customers search for — price, timing, booking, expectations. AI systems pull these verbatim when they match a query.
                     </>
                 ),
                 find: () => root.querySelector( '.gleo-faq-wrap .gleo-faq-accordion' ) || root.querySelector( '.gleo-faq-wrap' ),
-            },
-            {
-                title: 'Section Structure',
-                blurb: (
-                    <>
-                        The <strong style={ { color: '#7dd3fc', fontWeight: 700 } }>section heading</strong> with the Gleo label (highlighted) breaks the article into chunks that are easier for people and AI to navigate.
-                    </>
-                ),
-                find: () => root.querySelector( 'h2.wp-block-heading.gleo-section-heading' ),
-            },
-            {
-                title: 'Reference Signals',
-                blurb: 'Source links and references reinforce trust and help models ground answers in verifiable material.',
-                find: () => {
-                    const h2s = root.querySelectorAll( 'h2.wp-block-heading, h2' );
-                    const sourceHeading = Array.from( h2s ).find( h => /sources|references/i.test( h.textContent || '' ) );
-                    if ( sourceHeading ) {
-                        return sourceHeading;
-                    }
-                    return root.querySelector( 'ol.wp-block-list, ul.wp-block-list' );
-                },
             },
             {
                 title: 'Structured Data',
@@ -992,13 +980,13 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
             if (cs.citation_count < 3) issues.push('Link to authoritative external sources');
             if (!cs.has_quotes) issues.push('Include expert quotes or testimonials');
             const msg = score === 15 ? 'Excellent credibility signals. Statistics, citations, and expert quotes are present.' : issues.join('. ') + '.';
-            const cred = [];
-            if (!cs.has_quotes) cred.push('expert_quotes');
-            const credF = cred.filter(ft => FIX_CONFIG[ft] && !FIX_CONFIG[ft].needsInput);
+            const credF = [];
+            if (!cs.has_quotes) credF.push('expert_quotes');
             items.push({
                 priority: score === 15 ? 'positive' : score <= 5 ? 'high' : 'medium',
                 area: GEO_CATEGORY_LABELS.trust, maxScore: 15, score, message: msg,
-                fixType: score < 15 ? credF[0] : null,
+                // credibility (Add Sources) always offered when citations are low — it's a manual-input fix shown separately
+                fixType: score < 15 ? (credF[0] || null) : null,
                 extraFixes: score < 15 ? credF.slice(1) : [],
                 emoji: '🛡️',
             });
@@ -1014,20 +1002,19 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
             else if (cs.long_paragraphs <= 2) score += 3;
             if (cs.list_item_count >= 3) score += 4;
             else if (cs.has_lists) score += 2;
-            if (cs.has_faq) score += 3;
-            if (cs.has_table) score += 3;
+            // FAQ block: 6 pts (redistributed from removed table check)
+            if (cs.has_faq) score += 6;
             const issues = [];
             if (cs.heading_count < 4) issues.push(`${cs.heading_count} headings — add H2s every ~3 paragraphs`);
             if (cs.long_paragraphs > 0) issues.push(`${cs.long_paragraphs} long paragraph(s) to shorten`);
             if (!cs.has_lists) issues.push('Convert dense text to bulleted lists');
             if (!cs.has_faq) issues.push('Add a contextual FAQ block');
-            if (!cs.has_table) issues.push('Add comparison tables');
             const msg = score === 20 ? 'Excellent AI-specific formatting. Content is fully optimized for AI extraction.' : issues.join('. ') + '.';
             items.push({
                 priority: score === 20 ? 'positive' : score <= 8 ? 'high' : 'medium',
                 area: GEO_CATEGORY_LABELS.structure, maxScore: 20, score, message: msg,
-                fixType: score < 20 ? 'structure' : null,
-                extraFixes: score < 20 ? ['formatting', 'faq', 'data_tables'] : [],
+                fixType: score < 20 ? 'formatting' : null,
+                extraFixes: score < 20 ? ['faq', 'readability'] : [],
                 emoji: '📐',
             });
         }
@@ -1522,7 +1509,7 @@ const App = () => {
             setOverrideSchema(s.gleo_override_schema || false);
         });
         apiFetch({ path: '/wp/v2/posts?per_page=20&status=publish' })
-            .then(posts => { setAvailablePosts(posts); setSelectedPosts(posts.slice(0, 5).map(p => p.id)); setIsLoadingPosts(false); })
+            .then(posts => { setAvailablePosts(posts); setSelectedPosts([]); setIsLoadingPosts(false); })
             .catch(() => setIsLoadingPosts(false));
         checkScanStatus();
     }, []);
@@ -1723,10 +1710,15 @@ const App = () => {
                                         )}
                                     </div>
                                 )}
+                                {!isLoadingPosts && availablePosts.length > 0 && selectedPosts.length === 0 && (
+                                    <p style={{ fontSize: 13, color: 'var(--fg-muted)', marginTop: 8, marginBottom: 0 }}>
+                                        Select at least one post to analyze.
+                                    </p>
+                                )}
                                 <button className="gleo-btn gleo-btn-primary"
                                     style={{ padding: '9px 24px', fontSize: 13.5, marginTop: 12 }}
                                     onClick={handleScan} disabled={isScanning || selectedPosts.length === 0}>
-                                    {isScanning ? 'Analyzing posts…' : `Analyze ${selectedPosts.length} post${selectedPosts.length !== 1 ? 's' : ''}`}
+                                    {isScanning ? 'Analyzing posts…' : selectedPosts.length === 0 ? 'Analyze posts' : `Analyze ${selectedPosts.length} post${selectedPosts.length !== 1 ? 's' : ''}`}
                                 </button>
                                 {isScanning && (() => {
                                     const effective = Math.max( scanProgress, estimatedProgress );

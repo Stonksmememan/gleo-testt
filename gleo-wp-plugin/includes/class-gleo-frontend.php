@@ -461,6 +461,60 @@ main .wp-block-columns .wp-block-column h2.wp-block-heading.gleo-section-heading
   background: var(--gc-card);
 }
 
+/* ── Sources & References block ─────────────────────────────────────────── */
+.gleo-sources-block {
+  border: 1px solid var(--gc-border);
+  border-left: 4px solid var(--gc-accent);
+  border-radius: var(--gc-radius);
+  background: var(--gc-card);
+  box-shadow: var(--gc-shadow);
+  padding: 22px 24px 20px;
+  margin: 1.75em 0;
+}
+.gleo-sources-heading {
+  font-size: clamp(1.05rem, 0.95rem + 0.35vw, 1.25rem) !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.01em !important;
+  margin: 0 0 0.7em !important;
+  color: var(--gc-text) !important;
+  line-height: 1.35 !important;
+}
+.gleo-sources-heading::before {
+  content: '';
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  margin-right: 8px;
+  vertical-align: -3px;
+  background-color: var(--gc-accent);
+  -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71'/%3E%3Cpath d='M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'/%3E%3C/svg%3E") no-repeat center / contain;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71'/%3E%3Cpath d='M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'/%3E%3C/svg%3E") no-repeat center / contain;
+}
+.gleo-sources-list {
+  margin: 0;
+  padding-left: 1.4em;
+  list-style: decimal;
+}
+.gleo-sources-list li {
+  padding: 4px 0;
+  font-size: 0.95rem;
+  line-height: 1.55;
+  color: var(--gc-text);
+}
+.gleo-sources-list li a {
+  color: var(--gc-accent);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  word-break: break-all;
+}
+.gleo-sources-list li a:hover { text-decoration: none; }
+/* External link indicator */
+.gleo-sources-list li a::after {
+  content: ' ↗';
+  font-size: 0.8em;
+  opacity: 0.7;
+}
+
 /* ── Data Table ────────────────────────────────────────────────────────── */
 .gleo-table-block {
   border: 1px solid var(--gc-border);
@@ -986,8 +1040,8 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 
 	/**
 	 * REST: Handle 1-click apply actions for a specific post.
-	 * Supports: schema, capsule, structure, formatting, readability,
-	 * faq, data_tables, authority, credibility, content_depth, answer_readiness.
+	 * Supports: schema, structure, formatting, readability,
+	 * faq, authority, credibility, content_depth, answer_readiness.
 	 */
 	/**
 	 * Add `data-label="<th>"` attributes to every <td> in a table fragment so the
@@ -1337,6 +1391,11 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 			'important considerations',
 			'data overview',
 			'additional insights',
+			'how it works',
+			'background on',
+			'overview of',
+			'basics of',
+			'in practice',
 		);
 	}
 
@@ -1369,7 +1428,6 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 			'/A\s+Closer\s+Look:?\s*/i'        => '',
 			'/A\s+closer\s+look\s+at\s+/i'     => '',
 			'/Data\s+Overview/i'               => 'At a glance',
-			'/Frequently\s+Asked\s+Questions/i' => 'Common questions',
 		);
 		foreach ( $replacements as $pattern => $replace ) {
 			$out = preg_replace( $pattern, $replace, $out );
@@ -1441,7 +1499,7 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 				'score' => 5 + $this->gleo_faq_keyword_score( $haystack, array( 'price', 'cost', 'fee', 'pricing', '$' ) ),
 			),
 			array(
-				'q'     => sprintf( __( 'How do I book or schedule %s?', 'gleo' ), $topic ),
+				'q'     => sprintf( __( 'How do I book %s?', 'gleo' ), $topic ),
 				'a'     => $this->gleo_faq_answer_from_content( $post, array( 'book', 'appointment', 'schedule', 'call', 'contact', 'reserve' ), sprintf( __( 'Use the contact options on this page to reach the team about %s — they can confirm availability and next steps.', 'gleo' ), $topic ) ),
 				'score' => 4 + $this->gleo_faq_keyword_score( $haystack, array( 'book', 'appointment', 'schedule', 'contact' ) ),
 			),
@@ -1461,19 +1519,24 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 				'score' => 4,
 			),
 			array(
-				'q'     => sprintf( __( 'What do I need before getting started with %s?', 'gleo' ), $topic ),
-				'a'     => $this->gleo_faq_answer_from_content( $post, array( 'bring', 'prepare', 'need', 'require', 'before' ), $excerpt ),
-				'score' => 3 + $this->gleo_faq_keyword_score( $haystack, array( 'need', 'require', 'prepare' ) ),
+				'q'     => sprintf( __( "What's included with %s?", 'gleo' ), $topic ),
+				'a'     => $this->gleo_faq_answer_from_content( $post, array( 'include', 'included', 'comes with', 'covers', 'package' ), $excerpt ),
+				'score' => 3 + $this->gleo_faq_keyword_score( $haystack, array( 'include', 'package', 'covers' ) ),
 			),
 			array(
-				'q'     => sprintf( __( 'Where is %s located?', 'gleo' ), $topic ),
-				'a'     => $this->gleo_faq_answer_from_content( $post, array( 'located', 'address', 'city', 'neighborhood', 'office' ), $excerpt ),
-				'score' => 2 + $this->gleo_faq_keyword_score( $haystack, array( 'location', 'address', 'street', 'city' ) ),
-			),
-			array(
-				'q'     => sprintf( __( 'Do you offer consultations for %s?', 'gleo' ), $topic ),
+				'q'     => sprintf( __( 'Do you offer free estimates for %s?', 'gleo' ), $topic ),
 				'a'     => $this->gleo_faq_answer_from_content( $post, array( 'consult', 'consultation', 'free', 'quote', 'estimate' ), $excerpt ),
 				'score' => 3 + $this->gleo_faq_keyword_score( $haystack, array( 'consult', 'quote', 'estimate', 'free' ) ),
+			),
+			array(
+				'q'     => sprintf( __( 'Where do you provide %s?', 'gleo' ), $topic ),
+				'a'     => $this->gleo_faq_answer_from_content( $post, array( 'located', 'address', 'city', 'neighborhood', 'area', 'serve' ), $excerpt ),
+				'score' => 2 + $this->gleo_faq_keyword_score( $haystack, array( 'location', 'address', 'city', 'serve', 'area' ) ),
+			),
+			array(
+				'q'     => sprintf( __( 'Can I get same-day %s?', 'gleo' ), $topic ),
+				'a'     => $this->gleo_faq_answer_from_content( $post, array( 'same day', 'same-day', 'emergency', 'urgent', 'available today' ), $excerpt ),
+				'score' => 2 + $this->gleo_faq_keyword_score( $haystack, array( 'same day', 'emergency', 'urgent', 'today' ) ),
 			),
 		);
 
@@ -1488,7 +1551,8 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 		foreach ( array_slice( $candidates, 0, 4 ) as $row ) {
 			$out[] = array(
 				'q' => $row['q'],
-				'a' => $row['a'],
+				// Cap answers to ~55 words so they stay readable in the accordion.
+				'a' => wp_trim_words( $row['a'], 55, '…' ),
 			);
 		}
 		return $out;
@@ -1515,22 +1579,29 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 			if ( '' === $q || ! preg_match( '/\?\s*$/', $q ) ) {
 				continue;
 			}
+			// Reject questions that are too long to be real searches (likely sentences).
+			if ( function_exists( 'mb_strlen' ) ? mb_strlen( $q ) > 120 : strlen( $q ) > 120 ) {
+				continue;
+			}
 			if ( $this->gleo_heading_is_banned( $q ) ) {
 				continue;
 			}
-			// Drop vague / academic phrasing.
-			if ( preg_match( '/\b(overview|landscape|paradigm|synergy|leverage|delve|realm)\b/i', $q ) ) {
+			// Reject textbook / academic phrasing that real customers never search.
+			if ( preg_match( '/\b(overview|landscape|paradigm|synergy|leverage|delve|realm|operational\s+framework|how\s+\S+\s+works|what\s+is\s+the\s+role|key\s+facts|basics\s+of|in\s+practice)\b/i', $q ) ) {
 				continue;
 			}
-			if ( preg_match( '/\b(how much|how long|how do|what should|is .+ right|where is|do you|can i|what do i need)\b/i', $q ) ) {
+			// Accept clear customer-search patterns first.
+			if ( preg_match( '/\b(how much|how long|how do|what should|is .+ right|where is|do you|can i|what do i need|what\'s included|same.?day|free estimate|free quote)\b/i', $q ) ) {
 				$good[] = $pair;
 				continue;
 			}
+			// Accept any question with a standard question word.
 			if ( preg_match( '/\b(what|why|when|where|who|does|do|is|are|can)\b/i', $q ) ) {
 				$good[] = $pair;
 			}
 		}
-		return count( $good ) >= 2 ? $good : $pairs;
+		// Only fall back to $pairs when fewer than 2 passed the filter; prefer the fallback pool otherwise.
+		return count( $good ) >= 2 ? $good : array();
 	}
 
 	/**
@@ -1637,11 +1708,9 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 		} elseif ( ! empty( $signals['has_lists'] ) ) {
 			$score += 2;
 		}
+		// FAQ block: 6 pts (redistributed from removed table check — mirrors gleo-node-api scoring).
 		if ( ! empty( $signals['has_faq'] ) ) {
-			$score += 3;
-		}
-		if ( ! empty( $signals['has_table'] ) ) {
-			$score += 3;
+			$score += 6;
 		}
 
 		return min( 100, $score );
@@ -1666,10 +1735,7 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 				$cs['has_org_schema'] = true;
 				$cs['has_faq_schema'] = true;
 				break;
-			case 'structure':
-				$cs['has_headings']   = true;
-				$cs['heading_count']  = max( (int) ( $cs['heading_count'] ?? 0 ), 6 );
-				break;
+		// 'structure' fix removed — no signal bump needed
 			case 'formatting':
 				$cs['has_lists']         = true;
 				$cs['list_item_count']   = max( (int) ( $cs['list_item_count'] ?? 0 ), 12 );
@@ -1682,9 +1748,7 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 				$cs['has_faq']            = true;
 				$cs['has_direct_answers'] = true;
 				break;
-			case 'data_tables':
-				$cs['has_table'] = true;
-				break;
+			// data_tables removed — comparison tables are no longer generated
 			case 'content_depth':
 				$cs['word_count'] = max( (int) ( $cs['word_count'] ?? 0 ), 1200 );
 				break;
@@ -2299,8 +2363,9 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 				$modified = true;
 				break;
 
-			case 'structure':
-			// ── Strip previously-injected Gleo headings so re-running is idempotent ──
+		case 'structure':
+			// Section heading injection removed. Strip any previously-injected headings
+			// so old posts are cleaned up when this fix is re-run.
 			$content = preg_replace(
 				'/\n?<!-- wp:heading -->\s*<h2[^>]*gleo-section-heading[^>]*>.*?<\/h2>\s*<!-- \/wp:heading -->\s*/is',
 				'',
@@ -2318,86 +2383,6 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 					'',
 					$content
 				);
-			}
-			// ── Insert contextual section headings (body-safe titles; spacing scales with length) ──
-			$p_total = (int) preg_match_all( '/<\/p>/i', $content );
-			if ( $p_total < 8 ) {
-				$max_headings = 1;
-			} elseif ( $p_total < 15 ) {
-				$max_headings = 2;
-			} elseif ( $p_total < 24 ) {
-				$max_headings = 3;
-			} else {
-				$max_headings = 4;
-			}
-			$heading_labels = $this->gleo_section_heading_labels_for_post( $post, $max_headings );
-			$avoid_near     = array( 'testimonial', 'review', ' said ', 'recommend', 'loved', 'quote', 'rating', 'stars', '★', '5 star', 'cookie', 'subscribe', 'newsletter' );
-			$insert_every   = (int) max( 4, ceil( $p_total / max( 1, $max_headings + 1 ) ) );
-			// Never insert section H2s in the last ~22% of paragraphs (avoids orphan headings at the very end).
-			$last_ok_para   = (int) max( 1, (int) floor( $p_total * 0.78 ) );
-			$paragraphs     = preg_split( '/(<\/p\s*>)/i', $content, -1, PREG_SPLIT_DELIM_CAPTURE );
-			$to_insert      = array();
-			$p_count        = 0;
-			$heading_num    = 0;
-			$buffer         = '';
-			foreach ( $paragraphs as $part ) {
-				$closed_para = (bool) preg_match( '/<\/p>/i', $part );
-				if ( $closed_para ) {
-					$buffer         .= $part;
-					$chunk_for_scan  = $buffer;
-					$buffer          = '';
-					$p_count++;
-					$para_plain = trim( wp_strip_all_tags( $chunk_for_scan ) );
-				} else {
-					$buffer         .= $part;
-					$chunk_for_scan = '';
-					$para_plain     = '';
-				}
-				if ( ! $closed_para ) {
-					continue;
-				}
-				$near       = strtolower( $para_plain );
-				$listy      = ( stripos( $chunk_for_scan, '<!-- wp:list' ) !== false || stripos( $chunk_for_scan, '<ul' ) !== false || stripos( $chunk_for_scan, '<ol' ) !== false || stripos( $chunk_for_scan, '<li' ) !== false );
-				$short_para = ( str_word_count( $near ) < 28 );
-				$skip       = $listy || $short_para || '' === $para_plain;
-				if ( ! $skip ) {
-					foreach ( $avoid_near as $kw ) {
-						if ( strpos( $near, $kw ) !== false ) {
-							$skip = true;
-							break;
-						}
-					}
-				}
-				$at_interval = ( 0 === ( $p_count % $insert_every ) );
-				if ( $p_total < 6 ) {
-					$at_interval = ( $p_count === (int) max( 1, (int) floor( $p_total / 2 ) ) );
-				}
-				if (
-					$at_interval &&
-					$p_count > 0 &&
-					$p_count < $p_total &&
-					$p_count <= $last_ok_para &&
-					$heading_num < $max_headings &&
-					! preg_match( '/<h[2-6]/i', $chunk_for_scan ) &&
-					! $skip
-				) {
-					$section_label = esc_html( $heading_labels[ $heading_num ] );
-					$html          = "\n<!-- wp:heading -->\n<h2 class=\"wp-block-heading gleo-section-heading\">{$section_label}</h2>\n<!-- /wp:heading -->\n";
-					$to_insert[]   = array(
-						'after' => $p_count,
-						'html'  => $html,
-					);
-					$heading_num++;
-				}
-			}
-			usort(
-				$to_insert,
-				static function ( $a, $b ) {
-					return ( (int) $b['after'] ) <=> ( (int) $a['after'] );
-				}
-			);
-			foreach ( $to_insert as $row ) {
-				$content = $this->inject_after_paragraph( $content, $row['html'], (int) $row['after'] );
 			}
 			$modified = true;
 			break;
@@ -2482,18 +2467,18 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 					$pairs = $this->gleo_practical_faq_pairs( $post );
 				}
 
-				// Build accordion HTML
-				$items_html = '';
-				foreach ( $pairs as $pair ) {
-					$q = esc_html( $pair['q'] );
-					$a = esc_html( $pair['a'] );
+			// Build accordion HTML
+			$items_html = '';
+			foreach ( $pairs as $pair ) {
+				$q = esc_html( $pair['q'] );
+				$a = esc_html( wp_trim_words( $pair['a'], 55, '…' ) );
 					$items_html .= '<div class="gleo-faq-item">'
 						. '<button type="button" class="gleo-faq-q" aria-expanded="false">' . $q . '</button>'
 						. '<div class="gleo-faq-a"><p>' . $a . '</p></div>'
 						. '</div>';
 				}
 				$faq_pairs_for_schema = array_slice( $pairs, 0, 5 );
-				$faq_title = __( 'Questions people often ask', 'gleo' );
+				$faq_title = __( 'Frequently Asked Questions', 'gleo' );
 				$faq_inner = '<div class="gleo-faq-wrap"><h2 class="wp-block-heading">' . esc_html( $faq_title ) . '</h2>'
 					. '<div class="gleo-faq-accordion">' . $items_html . '</div></div>';
 				// Wrap as a proper Gutenberg HTML block so the block editor preserves it intact.
@@ -2505,36 +2490,8 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 				break;
 
 			case 'data_tables':
-				if ( ! empty( $contextual_assets['data_table_html'] ) ) {
-					$raw = $contextual_assets['data_table_html'];
-					preg_match( '/<table[^>]*>(.*?)<\/table>/si', $raw, $tm );
-					if ( ! empty( $tm[1] ) ) {
-						$inner_table = $this->annotate_table_with_data_labels( $tm[1] );
-						$table_inner = '<div class="gleo-table-block"><h3>' . esc_html( $this->gleo_short_topic_label( $post ) ) . '</h3>'
-							. '<div class="gleo-table-scroll"><table class="gleo-data-table">' . $inner_table . '</table></div></div>';
-					} else {
-						$table_inner = '<div class="gleo-table-block"><div class="gleo-table-scroll">' . wp_kses_post( $raw ) . '</div></div>';
-					}
-				} else {
-					$topic = esc_html( $post->post_title );
-					$rows  = '<thead><tr><th>Feature</th><th>Details</th><th>Impact</th></tr></thead>'
-						. '<tbody>'
-						. '<tr><td>Primary Benefit</td><td>Key advantage related to ' . $topic . '</td><td>High</td></tr>'
-						. '<tr><td>Secondary Benefit</td><td>Additional value point</td><td>Medium</td></tr>'
-						. '<tr><td>Consideration</td><td>Important factor to evaluate</td><td>Varies</td></tr>'
-						. '</tbody>';
-					$rows = $this->annotate_table_with_data_labels( $rows );
-					$table_inner = '<div class="gleo-table-block">'
-						. '<h3>' . $topic . ' Overview</h3>'
-						. '<div class="gleo-table-scroll"><table class="gleo-data-table">'
-						. $rows
-						. '</table></div></div>';
-				}
-				$table_block = "<!-- wp:html -->\n" . $table_inner . "\n<!-- /wp:html -->";
-				$pos = $this->find_best_paragraph( $content, 'table' );
-				$content = $this->inject_after_paragraph( $content, $table_block, $pos );
-				$modified = true;
-				break;
+				// Comparison tables removed — return graceful no-op instead of error.
+				return new WP_Error( 'removed_fix', 'Comparison table generation has been removed.', array( 'status' => 400 ) );
 
 			case 'authority':
 				$content = $this->gleo_strip_stats_callout_blocks( $content );
@@ -2562,41 +2519,49 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 				$modified = true;
 				break;
 
-			case 'credibility':
-				$urls = is_array( $user_input ) ? $user_input : array();
-				if ( empty( $urls ) ) {
-					return new WP_Error( 'missing_input', 'Please provide source URLs.', array( 'status' => 400 ) );
-				}
-				$sources_html  = "\n<!-- wp:heading -->\n<h2 class=\"wp-block-heading\">Sources &amp; References</h2>\n<!-- /wp:heading -->\n";
-				$sources_html .= "<!-- wp:list {\"ordered\":true} -->\n<ol class=\"wp-block-list\">\n";
-				foreach ( $urls as $url ) {
-					$url    = esc_url( $url );
-					$domain = wp_parse_url( $url, PHP_URL_HOST );
-					$sources_html .= "<!-- wp:list-item -->\n<li><a href=\"{$url}\" target=\"_blank\" rel=\"noopener noreferrer\">{$domain}</a></li>\n<!-- /wp:list-item -->\n";
-				}
-				$sources_html .= "</ol>\n<!-- /wp:list -->\n";
-				$content .= $sources_html;
-				$modified = true;
-				break;
+		case 'credibility':
+			$urls = is_array( $user_input ) ? $user_input : array();
+			if ( empty( $urls ) ) {
+				return new WP_Error( 'missing_input', 'Please provide source URLs.', array( 'status' => 400 ) );
+			}
+			$list_items = '';
+			foreach ( $urls as $url ) {
+				$url         = esc_url( $url );
+				$domain      = wp_parse_url( $url, PHP_URL_HOST );
+				$list_items .= '<li><a href="' . $url . '" target="_blank" rel="noopener noreferrer">' . esc_html( $domain ) . '</a></li>' . "\n";
+			}
+			$sources_inner = '<div class="gleo-sources-block">'
+				. '<h2 class="wp-block-heading gleo-sources-heading">Sources &amp; References</h2>'
+				. '<ol class="gleo-sources-list">' . $list_items . '</ol>'
+				. '</div>';
+			$content .= "\n<!-- wp:html -->\n" . $sources_inner . "\n<!-- /wp:html -->\n";
+			$modified = true;
+			break;
 
-			case 'content_depth':
-				if ( ! empty( $contextual_assets['depth_html'] ) ) {
-					$depth_html = $this->normalize_contextual_fragment( $contextual_assets['depth_html'] );
-					$depth_html = $this->gleo_scrub_robotic_phrases( $depth_html );
-					$content = $this->inject_after_paragraph( $content, wp_kses_post( $depth_html ), 3 );
-				} else {
-					$topic      = esc_html( $this->gleo_short_topic_label( $post ) );
-					$expansion  = "\n<!-- wp:heading -->\n<h2 class=\"wp-block-heading gleo-section-heading\">" . sprintf( 'How %s works', $topic ) . "</h2>\n<!-- /wp:heading -->\n";
-					$clean = trim( preg_replace( '/\s+/', ' ', wp_strip_all_tags( $post->post_content ) ) );
-					$sentences = preg_split( '/(?<=[.!?])\s+/', $clean, -1, PREG_SPLIT_NO_EMPTY );
-					$fallback_one = ! empty( $sentences[0] ) ? $sentences[0] : sprintf( '%s is best understood by looking at the specific details in this article.', $topic );
-					$fallback_two = ! empty( $sentences[1] ) ? $sentences[1] : sprintf( 'Use the points above as context for evaluating %s in your own situation.', $topic );
-					$expansion .= "<!-- wp:paragraph -->\n<p>" . esc_html( $fallback_one ) . "</p>\n<!-- /wp:paragraph -->\n";
-					$expansion .= "<!-- wp:paragraph -->\n<p>" . esc_html( $fallback_two ) . "</p>\n<!-- /wp:paragraph -->\n";
-					$content = $this->inject_after_paragraph( $content, $expansion, 3 );
-				}
-				$modified = true;
-				break;
+		case 'content_depth':
+			if ( ! empty( $contextual_assets['depth_html'] ) ) {
+				$depth_html = $this->normalize_contextual_fragment( $contextual_assets['depth_html'] );
+				$depth_html = $this->gleo_scrub_robotic_phrases( $depth_html );
+				// Strip any "How X works" or generic section headings the model may have produced.
+				$depth_html = preg_replace(
+					'/\n?<!-- wp:heading -->\s*<h2[^>]*>(?:How [^<]+ works|Background on [^<]+|Overview of [^<]+|Basics of [^<]+|What is [^<]+)<\/h2>\s*<!-- \/wp:heading -->\s*/i',
+					'',
+					$depth_html
+				);
+				$content = $this->inject_after_paragraph( $content, wp_kses_post( $depth_html ), 3 );
+			} else {
+				// Fallback: inject paragraphs only — no generic "How X works" heading.
+				$clean = trim( preg_replace( '/\s+/', ' ', wp_strip_all_tags( $post->post_content ) ) );
+				$sentences = preg_split( '/(?<=[.!?])\s+/', $clean, -1, PREG_SPLIT_NO_EMPTY );
+				$topic        = esc_html( $this->gleo_short_topic_label( $post ) );
+				$fallback_one = ! empty( $sentences[0] ) ? $sentences[0] : sprintf( '%s is best understood by looking at the specific details in this article.', $topic );
+				$fallback_two = ! empty( $sentences[1] ) ? $sentences[1] : sprintf( 'Use the points above as context for evaluating %s in your own situation.', $topic );
+				$expansion    = "<!-- wp:paragraph -->\n<p>" . esc_html( $fallback_one ) . "</p>\n<!-- /wp:paragraph -->\n";
+				$expansion   .= "<!-- wp:paragraph -->\n<p>" . esc_html( $fallback_two ) . "</p>\n<!-- /wp:paragraph -->\n";
+				$content = $this->inject_after_paragraph( $content, $expansion, 3 );
+			}
+			$modified = true;
+			break;
 
 
 			default:

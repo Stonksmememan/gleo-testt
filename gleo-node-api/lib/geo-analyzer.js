@@ -44,7 +44,7 @@ function looksStatInstructionPlaceholder(text = '') {
 
 function sanitizeContextualAssets(assets) {
   if (!assets || typeof assets !== 'object') return null;
-  const keys = ['data_table_html', 'faq_html', 'depth_html', 'qa_html', 'authority_html'];
+  const keys = ['faq_html', 'depth_html', 'qa_html', 'authority_html'];
   const out = { ...assets };
   let hasAny = false;
   for (const key of keys) {
@@ -75,7 +75,7 @@ async function generateContextualAssets(title, content) {
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
       contents: [
-        { role: "user", parts: [{ text: `Article title: ${title}\nArticle excerpt (from the page): ${plainText}\n\nWrite HTML snippets a real site owner would paste into WordPress. Sound like a knowledgeable human editor — warm, specific, never templated or salesy.\n\nBanned phrases (never use in headings or body): "a closer look", "closer look at", "key details", "what you need to know", "deep dive", "key takeaways", "important considerations", "data overview", "why choose us", "elevate your", marketing clichés.\n\nUse headings that name the actual topic (e.g. "How ceramic mugs are fired" not "A closer look at mugs"). FAQ questions should sound like real customer questions.\n\nNever output instructional placeholder text about statistics. For authority_html, use real numbers from the excerpt or leave empty.\n\nFormatting: H2 for main section titles only; H3 for FAQ questions. No fixed heights or overflow:hidden. Readable contrast.\n\nInclude: (1) comparison table in <figure class="wp-block-table"><table>...</table></figure>, (2) FAQ with topic-specific H2 + 2–3 H3 questions that real customers ask (price, booking, timing, expectations, location — not academic or obscure questions), (3) one extra H2 section with a useful paragraph, (4) compact Q&A block, (5) one <p> with statistics as normal sentences if the excerpt supports it.` }] }
+        { role: "user", parts: [{ text: `Article title: ${title}\nArticle excerpt (from the page): ${plainText}\n\nWrite HTML snippets a real site owner would paste into WordPress. Sound like a knowledgeable human editor — warm, specific, never templated or salesy.\n\nBanned phrases (never use in headings or body): "a closer look", "closer look at", "key details", "what you need to know", "deep dive", "key takeaways", "important considerations", "data overview", "why choose us", "elevate your", marketing clichés. Also banned in headings: "How X works", "Background on X", "Overview of X", "What is X", "Basics of X" — use a specific, topic-grounded heading instead.\n\nFAQ questions must read exactly like real Google searches a customer would type. Good example: "How much does emergency pipe repair cost in Austin?" Bad example: "What is the operational framework of pipe repair?" Each question should be short, specific, and contain a concrete detail from the article when possible.\n\nNever output instructional placeholder text about statistics. For authority_html, use real numbers from the excerpt or leave empty.\n\nFormatting: H2 for main section titles only; H3 for FAQ questions. No fixed heights or overflow:hidden. Readable contrast.\n\nInclude: (1) FAQ with 2–3 H3 questions that real customers actually search for (price, booking, timing, expectations, location — never academic or generic questions), (2) one H2 section with a specific, useful paragraph grounded in the excerpt, (3) compact Q&A block, (4) one <p> with statistics as normal sentences if the excerpt supports it.` }] }
       ],
       config: {
         systemInstruction: "You are a senior editor for a small business website. Write natural, trustworthy copy that matches the excerpt. No SEO filler, no robotic templates, no generic section titles. Return strict JSON only.",
@@ -83,13 +83,12 @@ async function generateContextualAssets(title, content) {
         responseSchema: {
           type: "OBJECT",
           properties: {
-            data_table_html: { type: "STRING", description: "Comparison table about the article topic only; <figure class=\"wp-block-table\"><table>...</table></figure>." },
-            faq_html: { type: "STRING", description: "FAQ: one concrete H2 title + 2–3 H3 questions people commonly ask (cost, how to book, what to expect, how long it takes). Each question must sound like a real Google search, not a textbook." },
-            depth_html: { type: "STRING", description: "One H2 (specific to the topic, not a generic label) plus one <p> that adds useful detail grounded in the excerpt." },
+            faq_html: { type: "STRING", description: "FAQ block: 2–3 H3 questions only (no H2 wrapper — the title is added separately). Each question must read exactly like a real customer Google search (e.g. 'How much does X cost?', 'Do you offer same-day X?', 'What's included in X?'). Never use academic, generic, or 'how X works' phrasing." },
+            depth_html: { type: "STRING", description: "One H2 with a specific, topic-grounded title (never 'How X works', 'Background on X', or any generic section label) plus one <p> that adds genuinely useful detail grounded in the excerpt." },
             qa_html: { type: "STRING", description: "Short Q&A block: natural question heading plus direct answer paragraph about the article's core idea." },
             authority_html: { type: "STRING", description: "Single <p> only: 2–3 real numeric statistics grounded in the excerpt as flowing prose; never instructions to the editor; use <p></p> if no numbers exist in the excerpt." }
           },
-          required: ["data_table_html", "faq_html", "depth_html", "qa_html", "authority_html"]
+          required: ["faq_html", "depth_html", "qa_html", "authority_html"]
         }
       }
     });
@@ -285,7 +284,7 @@ function analyzeContentSignals(htmlContent, title) {
   const listCount = $('ul, ol').length;
   const hasList = listCount > 0;
   
-  const hasTable = $('table').length > 0 || /gleo-data-table|gleo-table-block/i.test(htmlContent || '');
+  // has_table removed — comparison tables are no longer generated or scored
   const effectiveHeadingCount = Math.max(
     headingCount,
     $('h2.gleo-section-heading, .gleo-section-heading').length + $('h3, h4').length
@@ -326,7 +325,6 @@ function analyzeContentSignals(htmlContent, title) {
     heading_count: effectiveHeadingCount,
     has_lists: hasList,
     list_item_count: listCount,
-    has_table: hasTable,
     has_faq: hasFAQ,
     has_images: imageCount > 0,
     paragraph_count: paragraphs.length,
@@ -403,11 +401,8 @@ function calculateGeoScore(signals, brandRate, tavilyResults) {
   if (signals.list_item_count >= 3) score += 4;
   else if (signals.has_lists) score += 2;
 
-  // FAQ block: 3 pts
-  if (signals.has_faq) score += 3;
-  
-  // Comparison tables: 3 pts
-  if (signals.has_table) score += 3;
+  // FAQ block: 6 pts (was 3; redistributed from removed table check)
+  if (signals.has_faq) score += 6;
 
   return Math.min(100, score);
 }
@@ -606,16 +601,15 @@ function generateRecommendations(signals, brandRate, geoScore) {
     else if (signals.long_paragraphs <= 2) score += 3;
     if (signals.list_item_count >= 3) score += 4;
     else if (signals.has_lists) score += 2;
-    if (signals.has_faq) score += 3;
-    if (signals.has_table) score += 3;
-    
+    // FAQ block: 6 pts (redistributed from removed table check)
+    if (signals.has_faq) score += 6;
+
     if (score < 20) {
       const issues = [];
       if (signals.heading_count < 4) issues.push(`Only ${signals.heading_count} headings — add H2s every ~3 paragraphs`);
       if (signals.long_paragraphs > 0) issues.push(`${signals.long_paragraphs} paragraph(s) exceed 80 words — shorten them`);
       if (!signals.has_lists) issues.push('Convert dense paragraphs into bulleted lists');
       if (!signals.has_faq) issues.push('Inject a contextual FAQ block near the end');
-      if (!signals.has_table) issues.push('Add comparison tables — AI loves structured tabular data');
       recs.push({
         priority: score <= 8 ? 'high' : 'medium',
         area: 'Structure & Formatting',
