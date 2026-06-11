@@ -182,8 +182,20 @@ function gleo_admin_scripts( $hook ) {
 		$posts_data = array();
 		foreach ( $top_posts as $p ) {
 			$posts_data[] = array(
-				'ID'    => $p->ID,
-				'title' => $p->post_title,
+				'ID'        => $p->ID,
+				'title'     => $p->post_title,
+				'post_type' => 'post',
+			);
+		}
+
+		$top_pages  = get_pages( array( 'number' => 50, 'post_status' => 'publish', 'sort_column' => 'menu_order' ) );
+		$pages_data = array();
+		foreach ( $top_pages as $pg ) {
+			$pages_data[] = array(
+				'ID'        => $pg->ID,
+				'title'     => $pg->post_title,
+				'post_type' => 'page',
+				'parent'    => (int) $pg->post_parent,
 			);
 		}
 
@@ -192,6 +204,7 @@ function gleo_admin_scripts( $hook ) {
 			'seoPluginName'   => $seo_plugin_name,
 			'siteUrl'         => get_site_url(),
 			'posts'           => $posts_data,
+			'pages'           => $pages_data,
 			'nodeApiUrl'      => esc_url_raw( $node_api_url ),
 		);
 

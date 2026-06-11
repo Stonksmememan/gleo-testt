@@ -1498,6 +1498,7 @@ const App = () => {
     const [availablePosts, setAvailablePosts]   = useState([]);
     const [selectedPosts, setSelectedPosts]     = useState([]);
     const [isLoadingPosts, setIsLoadingPosts]   = useState(true);
+    const [recommendedSelected, setRecommendedSelected] = useState(false);
     const [showScanModal, setShowScanModal]     = useState(false);
     const scanJustStarted                       = useRef(false);
     const scanStartedAtRef                      = useRef(null);
@@ -1508,9 +1509,27 @@ const App = () => {
             setSecretKey(s.gleo_secret_key || '');
             setOverrideSchema(s.gleo_override_schema || false);
         });
-        apiFetch({ path: '/wp/v2/posts?per_page=20&status=publish' })
-            .then(posts => { setAvailablePosts(posts); setSelectedPosts([]); setIsLoadingPosts(false); })
-            .catch(() => setIsLoadingPosts(false));
+        // Fetch both pages and posts so dental/medical service pages are included
+        Promise.all([
+            apiFetch({ path: '/wp/v2/pages?per_page=50&status=publish&orderby=menu_order&order=asc' }),
+            apiFetch({ path: '/wp/v2/posts?per_page=20&status=publish' }),
+        ]).then(([pages, posts]) => {
+            const taggedPages = (pages || []).map(p => ({ ...p, _gleo_type: 'page' }));
+            const taggedPosts = (posts || []).map(p => ({ ...p, _gleo_type: 'post' }));
+            const allContent = [...taggedPages, ...taggedPosts];
+            setAvailablePosts(allContent);
+            // Auto-select recommended pages: front page + all top-level pages (parent === 0)
+            const recommended = taggedPages
+                .filter(p => p.parent === 0 || p.link === gleoData?.siteUrl + '/')
+                .map(p => p.id);
+            if (recommended.length > 0) {
+                setSelectedPosts(recommended);
+                setRecommendedSelected(true);
+            } else {
+                setSelectedPosts([]);
+            }
+            setIsLoadingPosts(false);
+        }).catch(() => setIsLoadingPosts(false));
         checkScanStatus();
     }, []);
 
@@ -1544,7 +1563,7 @@ const App = () => {
     };
 
     const handleScan = () => {
-        if (selectedPosts.length === 0) { setSaveStatus({ type: 'error', message: 'Select at least one post.' }); return; }
+        if (selectedPosts.length === 0) { setSaveStatus({ type: 'error', message: 'Select at least one page or post to analyze.' }); return; }
         scanJustStarted.current = true;
         scanStartedAtRef.current = Date.now();
         setIsScanning(true);
@@ -1653,7 +1672,7 @@ const App = () => {
                             <div className="gleo-card" style={ { marginBottom: 0 } }>
                                 <div className="gleo-card-body" style={ { padding: '18px 20px' } }>
                                     <div style={ { fontSize: 34, fontWeight: 800, color: 'var(--fg)', letterSpacing: -1, lineHeight: 1.1 } }>{ postsUnscanned }</div>
-                                    <p style={ { fontSize: 13, color: 'var(--fg-muted)', margin: '10px 0 0' } }>Posts unscanned</p>
+                                    <p style={ { fontSize: 13, color: 'var(--fg-muted)', margin: '10px 0 0' } }>Pages unscanned</p>
                                 </div>
                             </div>
                             <div className="gleo-card" style={ { marginBottom: 0 } }>
@@ -1670,7 +1689,7 @@ const App = () => {
                         {scanResults.length > 0 && (
                             <>
                                 <div className="gleo-section-label" style={{ marginBottom: 10 }}>
-                                    Results — {scanResults.length} post{scanResults.length !== 1 ? 's' : ''}
+                                    Results — {scanResults.length} page{scanResults.length !== 1 ? 's' : ''} & post{scanResults.length !== 1 ? 's' : ''}
                                 </div>
                                 { scanResults.map( r => (
                                     <GeoReportCard
@@ -1687,38 +1706,92 @@ const App = () => {
                             </>
                         )}
 
-                        {/* Post selection + scan trigger */}
+                        {/* Page & post selection + scan trigger */}
                         <div className="gleo-card" style={{ marginBottom: 24, marginTop: scanResults.length > 0 ? 24 : 0 }}>
                             <div className="gleo-card-header">
-                                <h3>Select posts to analyze</h3>
+                                <h3>Select pages &amp; posts to analyze</h3>
                                 <span className="gleo-card-meta">{selectedPosts.length} selected</span>
                             </div>
                             <div className="gleo-card-body">
                                 {isLoadingPosts ? (
-                                    <p style={{ fontSize: 13, color: 'var(--fg-muted)' }}>Loading posts…</p>
-                                ) : (
-                                    <div className="gleo-post-list">
-                                        {availablePosts.map(post => (
-                                            <div key={post.id} className="gleo-post-item"
-                                                onClick={() => setSelectedPosts(p => p.includes(post.id) ? p.filter(id => id !== post.id) : [...p, post.id])}>
-                                                <input type="checkbox" checked={selectedPosts.includes(post.id)} onChange={() => {}}/>
-                                                <label>{post.title.rendered || `Post #${post.id}`}</label>
-                                            </div>
-                                        ))}
-                                        {availablePosts.length === 0 && (
-                                            <p style={{ padding: 8, fontSize: 13, color: 'var(--fg-muted)' }}>No published posts found.</p>
-                                        )}
-                                    </div>
-                                )}
+                                    <p style={{ fontSize: 13, color: 'var(--fg-muted)' }}>Loading site content…</p>
+                                ) : (() => {
+                                    const pages = availablePosts.filter(p => p._gleo_type === 'page');
+                                    const posts = availablePosts.filter(p => p._gleo_type === 'post');
+                                    const recommendedIds = pages.filter(p => p.parent === 0).map(p => p.id);
+                                    const toggleItem = id => setSelectedPosts(prev =>
+                                        prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+                                    );
+                                    const selectRecommended = () => {
+                                        setSelectedPosts(recommendedIds);
+                                        setRecommendedSelected(true);
+                                    };
+                                    return (
+                                        <div>
+                                            {recommendedIds.length > 0 && (
+                                                <div style={{ marginBottom: 12, display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                                                    <button type="button" className="gleo-btn gleo-btn-outline"
+                                                        style={{ fontSize: 12, padding: '4px 12px' }}
+                                                        onClick={selectRecommended}>
+                                                        Select recommended pages
+                                                    </button>
+                                                    <span style={{ fontSize: 12, color: 'var(--fg-muted)' }}>
+                                                        Home + top-level service pages — highest impact for patient discovery
+                                                    </span>
+                                                </div>
+                                            )}
+                                            {pages.length > 0 && (
+                                                <>
+                                                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
+                                                        Pages ({pages.length})
+                                                    </div>
+                                                    <div className="gleo-post-list" style={{ marginBottom: 14 }}>
+                                                        {pages.map(page => (
+                                                            <div key={page.id} className="gleo-post-item"
+                                                                onClick={() => toggleItem(page.id)}>
+                                                                <input type="checkbox" checked={selectedPosts.includes(page.id)} onChange={() => {}} />
+                                                                <label style={{ flex: 1 }}>{page.title.rendered || `Page #${page.id}`}</label>
+                                                                {page.parent === 0 && (
+                                                                    <span style={{ fontSize: 10.5, fontWeight: 600, color: 'var(--blue)', background: 'rgba(59,130,246,0.1)', borderRadius: 4, padding: '1px 6px', marginLeft: 6, flexShrink: 0 }}>
+                                                                        Top-level
+                                                                    </span>
+                                                                )}
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </>
+                                            )}
+                                            {posts.length > 0 && (
+                                                <>
+                                                    <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--fg-muted)', textTransform: 'uppercase', letterSpacing: '0.06em', marginBottom: 6 }}>
+                                                        Blog Posts ({posts.length})
+                                                    </div>
+                                                    <div className="gleo-post-list">
+                                                        {posts.map(post => (
+                                                            <div key={post.id} className="gleo-post-item"
+                                                                onClick={() => toggleItem(post.id)}>
+                                                                <input type="checkbox" checked={selectedPosts.includes(post.id)} onChange={() => {}} />
+                                                                <label>{post.title.rendered || `Post #${post.id}`}</label>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </>
+                                            )}
+                                            {availablePosts.length === 0 && (
+                                                <p style={{ padding: 8, fontSize: 13, color: 'var(--fg-muted)' }}>No published pages or posts found.</p>
+                                            )}
+                                        </div>
+                                    );
+                                })()}
                                 {!isLoadingPosts && availablePosts.length > 0 && selectedPosts.length === 0 && (
                                     <p style={{ fontSize: 13, color: 'var(--fg-muted)', marginTop: 8, marginBottom: 0 }}>
-                                        Select at least one post to analyze.
+                                        Select at least one page or post to analyze.
                                     </p>
                                 )}
                                 <button className="gleo-btn gleo-btn-primary"
                                     style={{ padding: '9px 24px', fontSize: 13.5, marginTop: 12 }}
                                     onClick={handleScan} disabled={isScanning || selectedPosts.length === 0}>
-                                    {isScanning ? 'Analyzing posts…' : selectedPosts.length === 0 ? 'Analyze posts' : `Analyze ${selectedPosts.length} post${selectedPosts.length !== 1 ? 's' : ''}`}
+                                    {isScanning ? 'Analyzing…' : selectedPosts.length === 0 ? 'Analyze pages & posts' : `Analyze ${selectedPosts.length} page${selectedPosts.length !== 1 ? 's' : ''} & post${selectedPosts.length !== 1 ? 's' : ''}`}
                                 </button>
                                 {isScanning && (() => {
                                     const effective = Math.max( scanProgress, estimatedProgress );

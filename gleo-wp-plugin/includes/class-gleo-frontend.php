@@ -270,7 +270,7 @@ GLEO_CSS;
 	 * element's actual rendered background — PHP cannot reliably detect dark sections.
 	 */
 	public function inject_content_styles() {
-		if ( ! is_singular( 'post' ) ) return;
+		if ( ! is_singular( array( 'post', 'page' ) ) ) return;
 		$accent      = $this->get_theme_accent_color();
 		$accent_bg   = $this->hex_to_rgba( $accent, '0.06' );
 		$accent_mid  = $this->hex_to_rgba( $accent, '0.16' );
@@ -946,7 +946,7 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 	 * Output AI overview in <head> for crawlers (not rendered as a visible page block).
 	 */
 	public function inject_ai_overview_head() {
-		if ( ! is_singular( 'post' ) ) {
+		if ( ! is_singular( array( 'post', 'page' ) ) ) {
 			return;
 		}
 		global $post;
@@ -980,7 +980,7 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 	 * @return string
 	 */
 	public function strip_legacy_visible_ai_overview( $content ) {
-		if ( is_admin() || ! is_singular( 'post' ) ) {
+		if ( is_admin() || ! is_singular( array( 'post', 'page' ) ) ) {
 			return $content;
 		}
 		$post_id = get_the_ID();
@@ -997,7 +997,7 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 	 * @return string
 	 */
 	public function append_ai_only_overview_markup( $content ) {
-		if ( is_admin() || ! is_singular( 'post' ) || ! in_the_loop() || ! is_main_query() ) {
+		if ( is_admin() || ! is_singular( array( 'post', 'page' ) ) || ! in_the_loop() || ! is_main_query() ) {
 			return $content;
 		}
 		$post_id = get_the_ID();

@@ -122,6 +122,7 @@ class Gleo_Batch_Scanner {
 				'post__in'    => array( $post_id ),
 				'numberposts' => 1,
 				'post_status' => 'publish',
+				'post_type'   => 'any',
 			)
 		);
 
@@ -207,11 +208,12 @@ class Gleo_Batch_Scanner {
 			return new WP_Error( 'no_posts', 'No posts selected.', array( 'status' => 400 ) );
 		}
 
-		// get selected published posts
+		// get selected published posts and pages
 		$posts = get_posts( array(
 			'post__in'    => $post_ids,
 			'numberposts' => -1,
 			'post_status' => 'publish',
+			'post_type'   => 'any',
 		) );
 
 		if ( empty( $posts ) ) {
