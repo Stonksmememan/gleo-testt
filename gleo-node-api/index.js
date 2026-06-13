@@ -118,7 +118,7 @@ app.post('/v1/optimize/critique', verifySignature, async (req, res) => {
 });
 
 app.post('/v1/analyze/start', verifySignature, (req, res) => {
-  const { batch_id, webhook, posts, site_url } = req.body;
+  const { batch_id, webhook, posts, site_url, practice_profile } = req.body;
   
   if (!webhook || !posts) {
     return res.status(400).json({ error: 'Missing webhook or posts array' });
@@ -134,7 +134,7 @@ app.post('/v1/analyze/start', verifySignature, (req, res) => {
     for (const post of posts) {
       let report;
       try {
-        report = await analyzePost(post, site_url || '');
+        report = await analyzePost(post, site_url || '', practice_profile || null);
       } catch (err) {
         console.error(`  [GEO] Failed to analyze post ${post.id}:`, err.message);
         report = {

@@ -65,6 +65,13 @@ const IconSettings = () => (
         <path d="M2.5 13.5c0-2.8 2.2-5 5-5s5 2.2 5 5"/>
     </svg>
 );
+const IconBuildingStore = () => (
+    <svg width="15" height="15" viewBox="0 0 15 15" fill="none" stroke="currentColor" strokeWidth="1.5">
+        <rect x="1" y="6" width="13" height="8" rx="1"/>
+        <path d="M1 6l2-4h9l2 4"/>
+        <path d="M6 14V9h3v5"/>
+    </svg>
+);
 const IconChevron = ({ open }) => (
     <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6"
         style={{ transform: open ? 'rotate(90deg)' : 'rotate(0deg)', transition: 'transform 0.15s', flexShrink: 0 }}>
@@ -105,6 +112,50 @@ const SuccessToast = ({ message, onDismiss }) => {
         <div className="gleo-toast">
             <span className="gleo-toast-icon">&#10003;</span>
             <span>{message}</span>
+        </div>
+    );
+};
+
+// ── FAQ placement modal ───────────────────────────────────────────────────────
+const FaqPlacementModal = ({ layoutMap, onSubmit, onCancel }) => {
+    const rec = layoutMap?.recommended_strategy || 'append_end';
+    const [strategy, setStrategy] = useState(rec);
+    const [anchor, setAnchor] = useState('');
+    const sections = layoutMap?.sections || [];
+    return (
+        <div className="gleo-modal-backdrop" onClick={onCancel}>
+            <div className="gleo-modal" onClick={e => e.stopPropagation()}>
+                <h3>FAQ placement</h3>
+                <p className="gleo-modal-prompt">Choose where to add the FAQ block.</p>
+                {layoutMap?.confidence === 'low' && (
+                    <p style={{ fontSize: 12, color: 'var(--amber)', marginBottom: 10 }}>Page builder detected — end of page is safest.</p>
+                )}
+                {['append_end', 'append_before_cta', 'skip_if_unsafe', 'manual'].map(key => (
+                    <div key={key} className="gleo-field" style={{ marginBottom: 8 }}>
+                        <label style={{ fontSize: 13, cursor: 'pointer' }}>
+                            <input type="radio" name="faq-pl" checked={strategy === key} onChange={() => setStrategy(key)} style={{ marginRight: 8 }}/>
+                            {key === 'append_end' && 'End of page (safest)'}
+                            {key === 'append_before_cta' && 'Before contact / booking'}
+                            {key === 'skip_if_unsafe' && 'Skip if layout is risky'}
+                            {key === 'manual' && 'Choose section manually'}
+                        </label>
+                    </div>
+                ))}
+                {strategy === 'manual' && (
+                    <select className="gleo-input" value={anchor} onChange={e => setAnchor(e.target.value)} style={{ marginBottom: 12 }}>
+                        <option value="">— Select section —</option>
+                        <option value="append_end">End of page</option>
+                        {sections.flatMap(s => [
+                            <option key={`a-${s.id}`} value={`after:${s.id}`}>After: {s.label}</option>,
+                            <option key={`b-${s.id}`} value={`before:${s.id}`}>Before: {s.label}</option>,
+                        ])}
+                    </select>
+                )}
+                <div className="gleo-modal-actions">
+                    <button className="gleo-btn gleo-btn-outline" onClick={onCancel}>Cancel</button>
+                    <button className="gleo-btn gleo-btn-primary" onClick={() => onSubmit(strategy, anchor)} disabled={strategy === 'manual' && !anchor}>Apply FAQ</button>
+                </div>
+            </div>
         </div>
     );
 };
@@ -1053,10 +1104,10 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
 
     const allItems = buildItems();
 
-    const doApply = (fixType, userInput) => {
+    const doApply = (fixType, userInput, extra = {}) => {
         const config = FIX_CONFIG[fixType];
         setApplyingTypes(p => ({ ...p, [fixType]: true }));
-        const data = { post_id, type: fixType, enabled: true };
+        const data = { post_id, type: fixType, enabled: true, ...extra };
         if (userInput !== undefined) data.user_input = userInput;
         return apiFetch({ path: '/gleo/v1/apply', method: 'POST', data })
             .then(( res ) => {
@@ -1066,7 +1117,12 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
                 }
                 addToast( config?.successMsg || `${ fixType } applied.` );
             } )
-            .catch(err => { addToast(`Failed: ${err.message || 'Unknown error'}`); })
+            .catch(err => {
+                const msg = err?.code === 'placement_skipped' || err?.data?.code === 'placement_skipped'
+                    ? ( err.message || 'FAQ not injected — layout too complex. Try "End of page".' )
+                    : ( err.message || 'Unknown error' );
+                addToast( `Failed: ${ msg }` );
+            })
             .finally(() => setApplyingTypes(p => ({ ...p, [fixType]: false })));
     };
 
@@ -1091,9 +1147,13 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
         addToast( failed ? 'Some fixes in this category failed.' : `Applied: ${ types.map( ft => FIX_CONFIG[ ft ]?.label || ft ).join( ', ' ) }` );
     };
 
-    const handleFix = fixType => {
+    const handleFix = (fixType, item) => {
         const config = FIX_CONFIG[fixType];
         if (!config) return;
+        if (fixType === 'faq') {
+            setModal({ fixType: 'faq_placement', title: 'FAQ placement', layoutMap: result.layout_map || {} });
+            return;
+        }
         if (config.needsInput) setModal({ fixType, title: config.label, prompt: config.prompt, inputType: config.inputType });
         else doApply(fixType);
     };
@@ -1111,7 +1171,11 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
     };
 
     const applyOneFix = async ( ft, attempt = 0 ) => {
-        const res = await apiFetch( { path: '/gleo/v1/apply', method: 'POST', data: { post_id, type: ft, enabled: true } } );
+        const extra = {};
+        if ( ft === 'faq' ) {
+            extra.placement_strategy = result.layout_map?.recommended_strategy || 'append_end';
+        }
+        const res = await apiFetch( { path: '/gleo/v1/apply', method: 'POST', data: { post_id, type: ft, enabled: true, ...extra } } );
         if ( typeof res?.geo_score === 'number' && onReportUpdated ) {
             onReportUpdated( post_id, { ...result, geo_score: res.geo_score } );
         }
@@ -1324,7 +1388,13 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
                         { isApplyingAll ? 'Applying…' : 'Apply fixes only' }
                     </button>
                 </div>
-                <p className="gleo-workflow-hint">Fixes that need your input (statistics, sources) stay one click each below. Requires gleo-node-api + Playwright for vision review.</p>
+                <p className="gleo-workflow-hint">Fixes that need your input (statistics, sources) stay one click each below. FAQ fix opens a placement picker.</p>
+                {appliedTypes.faq && (
+                    <button type="button" className="gleo-btn gleo-btn-outline" style={{ fontSize: 12, marginTop: 8 }}
+                        onClick={() => setModal({ fixType: 'faq_placement', title: 'Move FAQ', layoutMap: result.layout_map || {} })}>
+                        Move FAQ to another section
+                    </button>
+                )}
             </div>
 
             { showReportBody && (
@@ -1429,11 +1499,393 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
                     onApplyAll={ handleApplyAll } applyingAll={ isApplyingAll } allApplied={ allAutoFixed }/>
             ) }
 
-            {modal && (
+            {modal && modal.fixType === 'faq_placement' && (
+                <FaqPlacementModal
+                    layoutMap={modal.layoutMap}
+                    onSubmit={(strategy, anchor) => {
+                        let s = strategy;
+                        let a = anchor;
+                        if (strategy === 'manual' && anchor === 'append_end') {
+                            s = 'append_end';
+                            a = '';
+                        }
+                        doApply('faq', undefined, {
+                            placement_strategy: s,
+                            placement_anchor: s === 'manual' ? a : (a && a.includes(':') ? a : ''),
+                        });
+                        setModal(null);
+                    }}
+                    onCancel={() => setModal(null)}
+                />
+            )}
+            {modal && modal.fixType !== 'faq_placement' && (
                 <InputModal title={modal.title} prompt={modal.prompt} inputType={modal.inputType}
                     onSubmit={input => { doApply(modal.fixType, input); setModal(null); }}
                     onCancel={() => setModal(null)}/>
             )}
+        </div>
+    );
+};
+
+// ── Practice Profile panel ─────────────────────────────────────────────────────
+const DAYS_OF_WEEK = ['monday','tuesday','wednesday','thursday','friday','saturday','sunday'];
+const DEFAULT_PROFILE = {
+    practice_type: '',
+    specialty: '',
+    locations: [{ label: '', street: '', city: '', state: '', zip: '', phone: '', hours: {} }],
+    providers: [],
+    insurance_accepted: [],
+    booking_url: '',
+    target_queries: [],
+};
+
+const profileCompleteness = (p) => {
+    const loc0 = p.locations?.[0] || {};
+    const checks = [
+        !!p.practice_type,
+        !!p.specialty,
+        p.locations?.length > 0,
+        !!loc0.phone,
+        !!loc0.street,
+        !!loc0.city,
+        p.providers?.length > 0,
+        p.insurance_accepted?.length > 0,
+        !!p.booking_url,
+        p.target_queries?.length > 0,
+    ];
+    return Math.round((checks.filter(Boolean).length / checks.length) * 100);
+};
+
+const PracticeProfilePanel = ({ siteUrl }) => {
+    const [profile, setProfile] = useState(DEFAULT_PROFILE);
+    const [isSaving, setIsSaving] = useState(false);
+    const [saveStatus, setSaveStatus] = useState(null);
+    const [insuranceInput, setInsuranceInput] = useState('');
+
+    useEffect(() => {
+        apiFetch({ path: '/wp/v2/settings' }).then(s => {
+            if (s.gleo_practice_profile) {
+                try {
+                    const parsed = JSON.parse(s.gleo_practice_profile);
+                    setProfile({ ...DEFAULT_PROFILE, ...parsed });
+                    if (parsed.insurance_accepted) {
+                        setInsuranceInput(parsed.insurance_accepted.join(', '));
+                    }
+                } catch (_) {}
+            }
+        });
+    }, []);
+
+    const update = (key, val) => setProfile(p => ({ ...p, [key]: val }));
+
+    const updateLoc = (idx, key, val) => setProfile(p => {
+        const locs = [...(p.locations || [])];
+        locs[idx] = { ...locs[idx], [key]: val };
+        return { ...p, locations: locs };
+    });
+
+    const updateLocHours = (idx, day, val) => setProfile(p => {
+        const locs = [...(p.locations || [])];
+        locs[idx] = { ...locs[idx], hours: { ...(locs[idx].hours || {}), [day]: val } };
+        return { ...p, locations: locs };
+    });
+
+    const addLocation = () => setProfile(p => ({
+        ...p,
+        locations: [...(p.locations || []), { label: '', street: '', city: '', state: '', zip: '', phone: '', hours: {} }],
+    }));
+
+    const removeLocation = (idx) => setProfile(p => ({
+        ...p,
+        locations: (p.locations || []).filter((_, i) => i !== idx),
+    }));
+
+    const updateProvider = (idx, key, val) => setProfile(p => {
+        const provs = [...(p.providers || [])];
+        provs[idx] = { ...provs[idx], [key]: val };
+        return { ...p, providers: provs };
+    });
+
+    const addProvider = () => setProfile(p => ({
+        ...p,
+        providers: [...(p.providers || []), { name: '', credentials: '', specialty: '' }],
+    }));
+
+    const removeProvider = (idx) => setProfile(p => ({
+        ...p,
+        providers: (p.providers || []).filter((_, i) => i !== idx),
+    }));
+
+    const updateQuery = (idx, val) => setProfile(p => {
+        const qs = [...(p.target_queries || [])];
+        qs[idx] = val;
+        return { ...p, target_queries: qs };
+    });
+
+    const addQuery = () => setProfile(p => ({
+        ...p,
+        target_queries: [...(p.target_queries || []), ''],
+    }));
+
+    const removeQuery = (idx) => setProfile(p => ({
+        ...p,
+        target_queries: (p.target_queries || []).filter((_, i) => i !== idx),
+    }));
+
+    const handleInsuranceBlur = () => {
+        const tags = insuranceInput.split(',').map(s => s.trim()).filter(Boolean);
+        update('insurance_accepted', tags);
+    };
+
+    const handleSave = () => {
+        setIsSaving(true);
+        const toSave = { ...profile };
+        // Sync insurance from input field
+        const ins = insuranceInput.split(',').map(s => s.trim()).filter(Boolean);
+        toSave.insurance_accepted = ins;
+        apiFetch({
+            path: '/wp/v2/settings',
+            method: 'POST',
+            data: { gleo_practice_profile: JSON.stringify(toSave) },
+        }).then(() => {
+            setIsSaving(false);
+            setSaveStatus({ type: 'success', message: 'Practice profile saved.' });
+            setTimeout(() => setSaveStatus(null), 3000);
+        }).catch(() => {
+            setIsSaving(false);
+            setSaveStatus({ type: 'error', message: 'Save failed. Please try again.' });
+        });
+    };
+
+    const pct = profileCompleteness(profile);
+    const pctColor = pct >= 80 ? 'var(--green, #22c55e)' : pct >= 50 ? 'var(--blue)' : 'var(--fg-muted)';
+
+    return (
+        <div>
+            <div className="gleo-page-header">
+                <div>
+                    <h1>Practice Profile</h1>
+                    <p className="gleo-page-subtitle">Help AI assistants recommend your practice for local patient questions</p>
+                </div>
+                <div className="gleo-header-actions">
+                    {siteUrl && (
+                        <a href={siteUrl + '/llms.txt'} target="_blank" rel="noopener noreferrer"
+                            className="gleo-btn gleo-btn-outline" style={{ fontSize: 12 }}>
+                            View /llms.txt
+                        </a>
+                    )}
+                </div>
+            </div>
+
+            {saveStatus && (
+                <div className={`gleo-notice ${saveStatus.type}`}>{saveStatus.message}</div>
+            )}
+
+            {/* Completeness meter */}
+            <div className="gleo-card" style={{ marginBottom: 20 }}>
+                <div className="gleo-card-body" style={{ padding: '14px 18px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 6 }}>
+                        <span style={{ fontSize: 13, color: 'var(--fg-mid)', flex: 1 }}>Profile completeness</span>
+                        <span style={{ fontWeight: 700, fontSize: 14, color: pctColor }}>{pct}%</span>
+                    </div>
+                    <div style={{ background: 'var(--border)', borderRadius: 4, height: 6, overflow: 'hidden' }}>
+                        <div style={{ width: `${pct}%`, height: '100%', background: pctColor, borderRadius: 4, transition: 'width 0.3s' }} />
+                    </div>
+                    {pct < 100 && (
+                        <p style={{ fontSize: 12, color: 'var(--fg-muted)', margin: '8px 0 0' }}>
+                            Complete your profile to maximise GEO signals in homepage schema and /llms.txt.
+                        </p>
+                    )}
+                </div>
+            </div>
+
+            {/* Practice type + specialty */}
+            <div className="gleo-creds-panel" style={{ marginBottom: 20 }}>
+                <h3 style={{ marginTop: 0 }}>Practice Information</h3>
+                <div className="gleo-field">
+                    <label>Practice Type</label>
+                    <select className="gleo-input" value={profile.practice_type}
+                        onChange={e => update('practice_type', e.target.value)}>
+                        <option value="">— Select type —</option>
+                        <option value="dentist">Dental Practice</option>
+                        <option value="physician">Physician Practice</option>
+                        <option value="medical_clinic">Medical Clinic</option>
+                        <option value="other">Other Healthcare</option>
+                    </select>
+                </div>
+                <div className="gleo-field">
+                    <label>Specialty</label>
+                    <input className="gleo-input" type="text"
+                        placeholder="e.g. General Dentistry, Family Medicine"
+                        value={profile.specialty}
+                        onChange={e => update('specialty', e.target.value)} />
+                </div>
+                <div className="gleo-field">
+                    <label>Booking URL</label>
+                    <input className="gleo-input" type="url"
+                        placeholder="https://yoursite.com/book"
+                        value={profile.booking_url}
+                        onChange={e => update('booking_url', e.target.value)} />
+                </div>
+            </div>
+
+            {/* Locations */}
+            <div className="gleo-creds-panel" style={{ marginBottom: 20 }}>
+                <h3 style={{ marginTop: 0 }}>Locations</h3>
+                {(profile.locations || []).map((loc, idx) => (
+                    <div key={idx} style={{ border: '1px solid var(--border)', borderRadius: 8, padding: 16, marginBottom: 14 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+                            <strong style={{ fontSize: 13 }}>{loc.label || `Location ${idx + 1}`}</strong>
+                            {(profile.locations || []).length > 1 && (
+                                <button type="button" onClick={() => removeLocation(idx)}
+                                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--fg-muted)', fontSize: 12 }}>
+                                    Remove
+                                </button>
+                            )}
+                        </div>
+                        <div className="gleo-field">
+                            <label>Office Name / Label</label>
+                            <input className="gleo-input" type="text" placeholder="Main Office"
+                                value={loc.label || ''} onChange={e => updateLoc(idx, 'label', e.target.value)} />
+                        </div>
+                        <div className="gleo-field">
+                            <label>Street Address</label>
+                            <input className="gleo-input" type="text" placeholder="123 Main St"
+                                value={loc.street || ''} onChange={e => updateLoc(idx, 'street', e.target.value)} />
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 80px 100px', gap: 10 }}>
+                            <div className="gleo-field" style={{ margin: 0 }}>
+                                <label>City</label>
+                                <input className="gleo-input" type="text" placeholder="Austin"
+                                    value={loc.city || ''} onChange={e => updateLoc(idx, 'city', e.target.value)} />
+                            </div>
+                            <div className="gleo-field" style={{ margin: 0 }}>
+                                <label>State</label>
+                                <input className="gleo-input" type="text" placeholder="TX"
+                                    value={loc.state || ''} onChange={e => updateLoc(idx, 'state', e.target.value)} />
+                            </div>
+                            <div className="gleo-field" style={{ margin: 0 }}>
+                                <label>ZIP</label>
+                                <input className="gleo-input" type="text" placeholder="78701"
+                                    value={loc.zip || ''} onChange={e => updateLoc(idx, 'zip', e.target.value)} />
+                            </div>
+                        </div>
+                        <div className="gleo-field">
+                            <label>Phone</label>
+                            <input className="gleo-input" type="tel" placeholder="+1-512-555-0100"
+                                value={loc.phone || ''} onChange={e => updateLoc(idx, 'phone', e.target.value)} />
+                        </div>
+                        <div className="gleo-field" style={{ marginBottom: 0 }}>
+                            <label>Office Hours</label>
+                            <div style={{ display: 'grid', gridTemplateColumns: '90px 1fr', gap: '4px 10px', alignItems: 'center', marginTop: 6 }}>
+                                {DAYS_OF_WEEK.map(day => (
+                                    <React.Fragment key={day}>
+                                        <span style={{ fontSize: 12, color: 'var(--fg-mid)', textTransform: 'capitalize' }}>{day}</span>
+                                        <input className="gleo-input" type="text"
+                                            placeholder={day === 'saturday' || day === 'sunday' ? 'Closed' : '9:00 AM - 5:00 PM'}
+                                            style={{ padding: '4px 8px', fontSize: 12 }}
+                                            value={(loc.hours || {})[day] || ''}
+                                            onChange={e => updateLocHours(idx, day, e.target.value)} />
+                                    </React.Fragment>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                ))}
+                {(profile.locations || []).length < 5 && (
+                    <button type="button" className="gleo-btn gleo-btn-outline" onClick={addLocation}
+                        style={{ fontSize: 12, marginTop: 4 }}>
+                        + Add Location
+                    </button>
+                )}
+            </div>
+
+            {/* Providers */}
+            <div className="gleo-creds-panel" style={{ marginBottom: 20 }}>
+                <h3 style={{ marginTop: 0 }}>Providers</h3>
+                {(profile.providers || []).map((prov, idx) => (
+                    <div key={idx} style={{ display: 'grid', gridTemplateColumns: '1fr 80px 1fr auto', gap: 10, alignItems: 'end', marginBottom: 10 }}>
+                        <div className="gleo-field" style={{ margin: 0 }}>
+                            {idx === 0 && <label>Name</label>}
+                            <input className="gleo-input" type="text" placeholder="Dr. Jane Smith"
+                                value={prov.name || ''} onChange={e => updateProvider(idx, 'name', e.target.value)} />
+                        </div>
+                        <div className="gleo-field" style={{ margin: 0 }}>
+                            {idx === 0 && <label>Credentials</label>}
+                            <input className="gleo-input" type="text" placeholder="DDS"
+                                value={prov.credentials || ''} onChange={e => updateProvider(idx, 'credentials', e.target.value)} />
+                        </div>
+                        <div className="gleo-field" style={{ margin: 0 }}>
+                            {idx === 0 && <label>Specialty</label>}
+                            <input className="gleo-input" type="text" placeholder="General Dentistry"
+                                value={prov.specialty || ''} onChange={e => updateProvider(idx, 'specialty', e.target.value)} />
+                        </div>
+                        <button type="button" onClick={() => removeProvider(idx)}
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--fg-muted)', fontSize: 18, paddingBottom: 6 }}>
+                            ×
+                        </button>
+                    </div>
+                ))}
+                {(profile.providers || []).length < 10 && (
+                    <button type="button" className="gleo-btn gleo-btn-outline" onClick={addProvider}
+                        style={{ fontSize: 12 }}>
+                        + Add Provider
+                    </button>
+                )}
+            </div>
+
+            {/* Insurance */}
+            <div className="gleo-creds-panel" style={{ marginBottom: 20 }}>
+                <h3 style={{ marginTop: 0 }}>Insurance Accepted</h3>
+                <div className="gleo-field" style={{ marginBottom: 0 }}>
+                    <label>Plans (comma-separated)</label>
+                    <input className="gleo-input" type="text"
+                        placeholder="Delta Dental, Cigna, Aetna, United Healthcare"
+                        value={insuranceInput}
+                        onChange={e => setInsuranceInput(e.target.value)}
+                        onBlur={handleInsuranceBlur} />
+                    <p style={{ fontSize: 12, color: 'var(--fg-muted)', margin: '6px 0 0' }}>
+                        Separate plan names with commas. Press Tab or click away to save the list.
+                    </p>
+                </div>
+            </div>
+
+            {/* Target AI queries */}
+            <div className="gleo-creds-panel" style={{ marginBottom: 20 }}>
+                <h3 style={{ marginTop: 0 }}>Target AI Queries</h3>
+                <p style={{ fontSize: 13, color: 'var(--fg-mid)', marginTop: 0, marginBottom: 12 }}>
+                    The patient questions you want AI assistants to recommend your practice for.
+                </p>
+                {(profile.target_queries || []).map((q, idx) => (
+                    <div key={idx} style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8 }}>
+                        <input className="gleo-input" type="text"
+                            placeholder={
+                                idx === 0 ? 'dentist near downtown Austin' :
+                                idx === 1 ? 'how much does teeth cleaning cost' :
+                                'do you accept Delta Dental insurance'
+                            }
+                            value={q}
+                            onChange={e => updateQuery(idx, e.target.value)}
+                            style={{ flex: 1 }} />
+                        <button type="button" onClick={() => removeQuery(idx)}
+                            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--fg-muted)', fontSize: 18 }}>
+                            ×
+                        </button>
+                    </div>
+                ))}
+                {(profile.target_queries || []).length < 10 && (
+                    <button type="button" className="gleo-btn gleo-btn-outline" onClick={addQuery}
+                        style={{ fontSize: 12 }}>
+                        + Add Query
+                    </button>
+                )}
+            </div>
+
+            <div style={{ marginBottom: 40 }}>
+                <button className="gleo-btn gleo-btn-primary" onClick={handleSave} disabled={isSaving}>
+                    {isSaving ? 'Saving…' : 'Save practice profile'}
+                </button>
+            </div>
         </div>
     );
 };
@@ -1636,6 +2088,10 @@ const App = () => {
                         <IconAnalytics/>
                         Analytics
                     </div>
+                    <div className={`gleo-nav-item ${activeTab === 'practice' ? 'active' : ''}`} onClick={() => setActiveTab('practice')}>
+                        <IconBuildingStore/>
+                        Practice
+                    </div>
                     <div className="gleo-nav-group">Account</div>
                     <div className={`gleo-nav-item ${activeTab === 'settings' ? 'active' : ''}`} onClick={() => setActiveTab('settings')}>
                         <IconSettings/>
@@ -1825,6 +2281,11 @@ const App = () => {
                 )}
 
                 { activeTab === 'analytics' && <AnalyticsTab/> }
+
+                {/* Practice Profile */}
+                {activeTab === 'practice' && (
+                    <PracticeProfilePanel siteUrl={gleoData?.siteUrl || ''}/>
+                )}
 
                 {/* Settings */}
                 {activeTab === 'settings' && (

@@ -188,6 +188,128 @@ class Gleo_Schema {
 	}
 
 	/**
+	 * Stable @id for the practice/business node (used when practice profile is configured).
+	 *
+	 * @return string
+	 */
+	public static function get_practice_id() {
+		return trailingslashit( home_url( '/' ) ) . '#gleo-practice';
+	}
+
+	/**
+	 * Build a healthcare-typed schema node (Dentist, MedicalClinic, LocalBusiness) from the
+	 * practice profile. Returns null when the profile is incomplete.
+	 *
+	 * @return array<string, mixed>|null
+	 */
+	public static function build_practice_schema() {
+		if ( ! class_exists( 'Gleo_Practice_Profile' ) ) {
+			return null;
+		}
+		$profile = Gleo_Practice_Profile::get();
+		if ( ! Gleo_Practice_Profile::is_set( $profile ) ) {
+			return null;
+		}
+
+		$meta       = self::get_site_metadata();
+		$schema_type = Gleo_Practice_Profile::get_schema_type( $profile['practice_type'] );
+
+		$practice = array(
+			'@type' => $schema_type,
+			'@id'   => self::get_practice_id(),
+			'name'  => $meta['name'],
+			'url'   => $meta['url'],
+		);
+
+		if ( '' !== $meta['description'] ) {
+			$practice['description'] = $meta['description'];
+		}
+		if ( '' !== $meta['logo'] ) {
+			$practice['logo'] = array(
+				'@type' => 'ImageObject',
+				'url'   => $meta['logo'],
+			);
+		}
+		if ( ! empty( $meta['social_links'] ) ) {
+			$practice['sameAs'] = $meta['social_links'];
+		}
+		if ( '' !== $profile['specialty'] ) {
+			$practice['medicalSpecialty'] = $profile['specialty'];
+		}
+		if ( '' !== $profile['booking_url'] ) {
+			$practice['potentialAction'] = array(
+				'@type'  => 'ReserveAction',
+				'name'   => 'Book Appointment',
+				'target' => esc_url_raw( $profile['booking_url'] ),
+			);
+		}
+
+		// Primary location → PostalAddress + telephone + openingHoursSpecification
+		if ( ! empty( $profile['locations'] ) ) {
+			$loc = $profile['locations'][0];
+			if ( is_array( $loc ) ) {
+				$addr = array( '@type' => 'PostalAddress' );
+				if ( ! empty( $loc['street'] ) ) {
+					$addr['streetAddress'] = $loc['street'];
+				}
+				if ( ! empty( $loc['city'] ) ) {
+					$addr['addressLocality'] = $loc['city'];
+				}
+				if ( ! empty( $loc['state'] ) ) {
+					$addr['addressRegion'] = $loc['state'];
+				}
+				if ( ! empty( $loc['zip'] ) ) {
+					$addr['postalCode'] = $loc['zip'];
+				}
+				$addr['addressCountry'] = 'US';
+				$practice['address']    = $addr;
+
+				if ( ! empty( $loc['phone'] ) ) {
+					$practice['telephone'] = $loc['phone'];
+				}
+
+				if ( ! empty( $loc['hours'] ) && is_array( $loc['hours'] ) ) {
+					$specs = Gleo_Practice_Profile::build_opening_hours_spec( $loc['hours'] );
+					if ( ! empty( $specs ) ) {
+						$practice['openingHoursSpecification'] = $specs;
+					}
+				}
+			}
+		}
+
+		// Providers → employee nodes
+		if ( ! empty( $profile['providers'] ) ) {
+			$employees = array();
+			foreach ( $profile['providers'] as $prov ) {
+				if ( ! is_array( $prov ) || empty( $prov['name'] ) ) {
+					continue;
+				}
+				$employee = array(
+					'@type' => 'Physician' === $schema_type ? 'Physician' : 'Person',
+					'name'  => $prov['name'],
+				);
+				if ( ! empty( $prov['credentials'] ) ) {
+					$employee['honorificSuffix'] = $prov['credentials'];
+				}
+				if ( ! empty( $prov['specialty'] ) ) {
+					$employee['jobTitle'] = $prov['specialty'];
+				}
+				$employees[] = $employee;
+			}
+			if ( ! empty( $employees ) ) {
+				$practice['employee'] = count( $employees ) === 1 ? $employees[0] : $employees;
+			}
+		}
+
+		// Insurance
+		if ( ! empty( $profile['insurance_accepted'] ) ) {
+			$practice['paymentAccepted'] = implode( ', ', $profile['insurance_accepted'] );
+		}
+
+		return $practice;
+	}
+
+	/**
 	 * Build Organization schema node.
 	 *
 	 * @return array<string, mixed>
@@ -246,9 +368,26 @@ class Gleo_Schema {
 	/**
 	 * Organization + WebSite graph for homepage / site layout.
 	 *
+	 * When a practice profile is configured, the Organization node is replaced with
+	 * the appropriate healthcare type (Dentist, MedicalClinic, etc.) and the WebSite
+	 * publisher pointer is updated to reference it.
+	 *
 	 * @return array<string, mixed>
 	 */
 	public static function build_site_graph_schema() {
+		$practice = self::build_practice_schema();
+
+		if ( null !== $practice ) {
+			$website = self::build_website_schema();
+			// Redirect the publisher pointer to the practice node.
+			$website['publisher'] = array( '@id' => self::get_practice_id() );
+
+			return array(
+				'@context' => 'https://schema.org',
+				'@graph'   => array( $practice, $website ),
+			);
+		}
+
 		return array(
 			'@context' => 'https://schema.org',
 			'@graph'   => array(

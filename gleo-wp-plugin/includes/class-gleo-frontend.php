@@ -873,6 +873,14 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 		echo 'URL: ' . esc_url_raw( $meta['url'] ) . "\n";
 		echo 'Sitemap: ' . esc_url_raw( home_url( '/sitemap.xml' ) ) . "\n\n";
 
+		// Practice profile sections (Phase 2: dental/medical identity for AI crawlers)
+		if ( class_exists( 'Gleo_Practice_Profile' ) ) {
+			$practice_sections = Gleo_Practice_Profile::to_llms_sections();
+			if ( '' !== $practice_sections ) {
+				echo $practice_sections; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+			}
+		}
+
 		echo "## Key Pages\n\n";
 		echo '- Home: ' . esc_url_raw( home_url( '/' ) ) . "\n";
 
@@ -911,7 +919,12 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 
 		echo "## Guidance for LLMs\n\n";
 		echo "- Prefer the homepage and key pages above for site-wide context.\n";
-		echo "- Article summaries below reflect the site's primary educational content.\n";
+		if ( class_exists( 'Gleo_Practice_Profile' ) && Gleo_Practice_Profile::is_set() ) {
+			echo "- Use the Practice Information, Locations, and Providers sections for local and medical intent queries.\n";
+			echo "- Patient Questions We Help Answer lists the queries this practice is optimized to answer.\n";
+		} else {
+			echo "- Article summaries below reflect the site's primary educational content.\n";
+		}
 		echo "- Use /sitemap.xml for the full list of indexable public URLs.\n";
 		echo "- Do not infer private, admin, preview, or draft content.\n\n";
 
@@ -1295,6 +1308,138 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 		return array( $left, $mid, $right );
 	}
 
+	private function gleo_strip_gleo_faq_blocks( $content ) {
+		return preg_replace( '/\n?<!-- wp:html -->[\s\S]*?gleo-faq-wrap[\s\S]*?<!-- \/wp:html -->\s*/i', "\n", (string) $content );
+	}
+
+	private function gleo_placement_is_unsafe( $content, $layout_map ) {
+		if ( is_array( $layout_map ) && ( $layout_map['confidence'] ?? '' ) === 'low' ) {
+			return true;
+		}
+		if ( is_array( $layout_map ) && ! empty( $layout_map['builder_detected'] ) ) {
+			return true;
+		}
+		return (bool) preg_match( '/elementor|et_pb_|vc_row|fl-builder|wpb_wrapper/i', (string) $content );
+	}
+
+	private function gleo_find_heading_pos_in_content( $content, $label ) {
+		if ( '' === trim( (string) $label ) ) {
+			return false;
+		}
+		$escaped = preg_quote( wp_strip_all_tags( $label ), '/' );
+		if ( preg_match( '/<!-- wp:heading[^>]*-->[\s\S]*?' . $escaped . '[\s\S]*?<!-- \/wp:heading -->/i', $content, $m, PREG_OFFSET_CAPTURE ) ) {
+			return (int) $m[0][1] + strlen( $m[0][0] );
+		}
+		if ( preg_match( '/<h[23][^>]*>[\s\S]*?' . $escaped . '[\s\S]*?<\/h[23]>/i', $content, $m, PREG_OFFSET_CAPTURE ) ) {
+			return (int) $m[0][1] + strlen( $m[0][0] );
+		}
+		return false;
+	}
+
+	private function gleo_find_cta_insert_position( $content, $layout_map ) {
+		$cta_label = '';
+		if ( is_array( $layout_map ) && ! empty( $layout_map['sections'] ) ) {
+			foreach ( $layout_map['sections'] as $sec ) {
+				if ( isset( $sec['type'] ) && 'cta' === $sec['type'] ) {
+					$cta_label = $sec['label'] ?? '';
+					break;
+				}
+			}
+		}
+		if ( $cta_label ) {
+			$pos = $this->gleo_find_heading_pos_in_content( $content, $cta_label );
+			if ( false !== $pos ) {
+				return $pos;
+			}
+		}
+		if ( preg_match( '/<!-- wp:heading[^>]*-->[\s\S]*?(contact|book|schedule)[\s\S]*?<!-- \/wp:heading -->/i', $content, $m, PREG_OFFSET_CAPTURE ) ) {
+			return (int) $m[0][1];
+		}
+		return false;
+	}
+
+	private function gleo_inject_at_anchor( $content, $block_html, $anchor, $layout_map ) {
+		if ( ! preg_match( '/^(before|after):(.+)$/', (string) $anchor, $m ) ) {
+			return null;
+		}
+		$dir = $m[1];
+		$ref = $m[2];
+		$label = $ref;
+		if ( is_array( $layout_map ) && ! empty( $layout_map['sections'] ) ) {
+			foreach ( $layout_map['sections'] as $sec ) {
+				if ( ( $sec['id'] ?? '' ) === $ref ) {
+					$label = $sec['label'] ?? $ref;
+					break;
+				}
+			}
+		}
+		if ( 'before' === $dir ) {
+			if ( preg_match( '/<!-- wp:heading[^>]*-->[\s\S]*?' . preg_quote( wp_strip_all_tags( $label ), '/' ) . '/i', $content, $hm, PREG_OFFSET_CAPTURE ) ) {
+				$pos = (int) $hm[0][1];
+				return substr( $content, 0, $pos ) . "\n\n" . $block_html . "\n\n" . substr( $content, $pos );
+			}
+		} else {
+			$pos = $this->gleo_find_heading_pos_in_content( $content, $label );
+			if ( false !== $pos ) {
+				return substr( $content, 0, $pos ) . "\n\n" . $block_html . "\n\n" . substr( $content, $pos );
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * Insert a Gleo HTML block using placement strategy.
+	 *
+	 * @return string|WP_Error
+	 */
+	private function gleo_inject_block_with_strategy( $content, $block_html, $strategy, $anchor, $layout_map ) {
+		$content = $this->gleo_strip_gleo_faq_blocks( $content );
+		$strategy = sanitize_text_field( (string) $strategy );
+		if ( '' === $strategy ) {
+			$strategy = get_option( 'gleo_faq_placement_default', 'append_end' );
+		}
+
+		if ( 'skip_if_unsafe' === $strategy && $this->gleo_placement_is_unsafe( $content, $layout_map ) ) {
+			return new WP_Error(
+				'placement_skipped',
+				__( 'FAQ not injected — page layout is too complex. Choose "End of page" or pick a section manually.', 'gleo' ),
+				array( 'status' => 409 )
+			);
+		}
+
+		if ( 'append_end' === $strategy ) {
+			return rtrim( $content ) . "\n\n" . $block_html;
+		}
+
+		if ( 'append_before_cta' === $strategy ) {
+			$pos = $this->gleo_find_cta_insert_position( $content, $layout_map );
+			if ( false !== $pos ) {
+				return substr( $content, 0, $pos ) . "\n\n" . $block_html . "\n\n" . substr( $content, $pos );
+			}
+			return rtrim( $content ) . "\n\n" . $block_html;
+		}
+
+		if ( 'manual' === $strategy && $anchor ) {
+			$mapped = $this->gleo_inject_at_anchor( $content, $block_html, $anchor, $layout_map );
+			if ( null !== $mapped ) {
+				return $mapped;
+			}
+		}
+
+		if ( $anchor && preg_match( '/^(before|after):/', $anchor ) ) {
+			$mapped = $this->gleo_inject_at_anchor( $content, $block_html, $anchor, $layout_map );
+			if ( null !== $mapped ) {
+				return $mapped;
+			}
+		}
+
+		if ( $this->gleo_placement_is_unsafe( $content, $layout_map ) ) {
+			return rtrim( $content ) . "\n\n" . $block_html;
+		}
+
+		return rtrim( $content ) . "\n\n" . $block_html;
+	}
+
 	private function inject_after_paragraph( $content, $html_to_inject, $target_index ) {
 		if ( ! is_string( $content ) || '' === $content || $target_index < 1 ) {
 			return $content . "\n" . $html_to_inject . "\n";
@@ -1661,15 +1806,28 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 		if ( ! empty( $signals['has_llms_txt'] ) ) {
 			$score += 5;
 		}
+		// Pillar 2: Structured Data & Schema (max 20) — mirrors geo-analyzer.js
+		$pillar2 = 0;
 		if ( ! empty( $signals['has_schema'] ) ) {
-			$score += 10;
+			$pillar2 += 10;
 		}
 		if ( ! empty( $signals['has_faq_schema'] ) ) {
-			$score += 5;
+			$pillar2 += 5;
 		}
 		if ( ! empty( $signals['has_org_schema'] ) ) {
-			$score += 5;
+			$pillar2 += 5;
 		}
+		// Practice profile detection signals (Phase 2)
+		if ( ! empty( $signals['has_nap_signals'] ) ) {
+			$pillar2 += 3;
+		}
+		if ( ! empty( $signals['has_hours_signals'] ) ) {
+			$pillar2 += 2;
+		}
+		if ( ! empty( $signals['has_booking_link'] ) ) {
+			$pillar2 += 2;
+		}
+		$score += min( 20, $pillar2 );
 
 		$wc = isset( $signals['word_count'] ) ? (int) $signals['word_count'] : 0;
 		if ( $wc >= 2000 ) {
@@ -1757,12 +1915,17 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 	private function gleo_bump_signals_after_fix( &$cs, $type, $post, $authority_has_numeric_stat = false ) {
 		switch ( $type ) {
 			case 'schema':
-				$cs['has_schema']     = true;
-				$cs['has_org_schema'] = true;
+				$cs['has_schema']            = true;
+				$cs['has_org_schema']        = true;
 				break;
 			case 'schema_enrich':
-				$cs['has_org_schema'] = true;
-				$cs['has_faq_schema'] = true;
+				$cs['has_org_schema']        = true;
+				$cs['has_faq_schema']        = true;
+				break;
+			case 'practice_schema':
+				$cs['has_schema']            = true;
+				$cs['has_org_schema']        = true;
+				$cs['has_healthcare_schema'] = true;
 				break;
 		// 'structure' fix removed — no signal bump needed
 			case 'formatting':
@@ -2228,6 +2391,8 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 		$type       = isset( $params['type'] ) ? sanitize_text_field( $params['type'] ) : '';
 		$enabled    = isset( $params['enabled'] ) ? (bool) $params['enabled'] : true;
 		$user_input = isset( $params['user_input'] ) ? $params['user_input'] : '';
+		$placement_strategy = isset( $params['placement_strategy'] ) ? sanitize_text_field( $params['placement_strategy'] ) : '';
+		$placement_anchor   = isset( $params['placement_anchor'] ) ? sanitize_text_field( $params['placement_anchor'] ) : '';
 
 		if ( ! $post_id || ! $type ) {
 			return new WP_Error( 'invalid_data', 'Missing post ID or type.', array( 'status' => 400 ) );
@@ -2247,10 +2412,14 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 		) );
 
 		$contextual_assets = null;
+		$layout_map        = null;
 		if ( $scan && $scan->scan_result ) {
 			$result_data = json_decode( $scan->scan_result, true );
 			if ( isset( $result_data['contextual_assets'] ) ) {
 				$contextual_assets = $result_data['contextual_assets'];
+			}
+			if ( isset( $result_data['layout_map'] ) && is_array( $result_data['layout_map'] ) ) {
+				$layout_map = $result_data['layout_map'];
 			}
 		}
 
@@ -2439,8 +2608,31 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 				// Wrap as a proper Gutenberg HTML block so the block editor preserves it intact.
 				$faq_block = "<!-- wp:html -->\n" . $faq_inner . "\n<!-- /wp:html -->";
 
-				$pos = $this->find_best_paragraph( $content, 'faq' );
-				$content = $this->inject_after_paragraph( $content, $faq_block, $pos );
+				$faq_strategy = $placement_strategy;
+				if ( '' === $faq_strategy ) {
+					$saved = (string) get_post_meta( $post_id, '_gleo_faq_placement', true );
+					if ( '' !== $saved ) {
+						$faq_strategy = $saved;
+					} elseif ( is_array( $layout_map ) && ! empty( $layout_map['recommended_strategy'] ) ) {
+						$faq_strategy = $layout_map['recommended_strategy'];
+					} else {
+						$faq_strategy = get_option( 'gleo_faq_placement_default', 'append_end' );
+					}
+				}
+
+				if ( '' === $placement_anchor ) {
+					$placement_anchor = (string) get_post_meta( $post_id, '_gleo_faq_placement_anchor', true );
+				}
+
+				$injected = $this->gleo_inject_block_with_strategy( $content, $faq_block, $faq_strategy, $placement_anchor, $layout_map );
+				if ( is_wp_error( $injected ) ) {
+					return $injected;
+				}
+				$content = $injected;
+				update_post_meta( $post_id, '_gleo_faq_placement', $faq_strategy );
+				if ( $placement_anchor ) {
+					update_post_meta( $post_id, '_gleo_faq_placement_anchor', $placement_anchor );
+				}
 				$modified = true;
 				break;
 
@@ -2503,7 +2695,7 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 					'',
 					$depth_html
 				);
-				$content = $this->inject_after_paragraph( $content, wp_kses_post( $depth_html ), 3 );
+				$content = rtrim( $content ) . "\n\n" . wp_kses_post( $depth_html );
 			} else {
 				// Fallback: inject paragraphs only — no generic "How X works" heading.
 				$clean = trim( preg_replace( '/\s+/', ' ', wp_strip_all_tags( $post->post_content ) ) );
@@ -2513,7 +2705,7 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
 				$fallback_two = ! empty( $sentences[1] ) ? $sentences[1] : sprintf( 'Use the points above as context for evaluating %s in your own situation.', $topic );
 				$expansion    = "<!-- wp:paragraph -->\n<p>" . esc_html( $fallback_one ) . "</p>\n<!-- /wp:paragraph -->\n";
 				$expansion   .= "<!-- wp:paragraph -->\n<p>" . esc_html( $fallback_two ) . "</p>\n<!-- /wp:paragraph -->\n";
-				$content = $this->inject_after_paragraph( $content, $expansion, 3 );
+				$content = rtrim( $content ) . "\n\n" . $expansion;
 			}
 			$modified = true;
 			break;

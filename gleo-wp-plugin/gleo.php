@@ -88,6 +88,122 @@ function gleo_register_settings() {
 		'show_in_rest'      => true,
 		'default'           => '',
 	) );
+
+	register_setting( 'gleo_settings', 'gleo_practice_profile', array(
+		'type'              => 'string',
+		'sanitize_callback' => 'gleo_sanitize_practice_profile_json',
+		'show_in_rest'      => true,
+		'default'           => '',
+	) );
+
+	register_setting( 'gleo_settings', 'gleo_faq_placement_default', array(
+		'type'              => 'string',
+		'sanitize_callback' => 'sanitize_text_field',
+		'show_in_rest'      => true,
+		'default'           => 'append_end',
+	) );
+}
+
+/**
+ * Sanitize JSON array of social profile URLs for gleo_social_links.
+ *
+ * @param mixed $value Raw option value.
+ * @return string JSON-encoded URL list.
+ */
+/**
+ * Sanitize JSON practice profile for gleo_practice_profile option.
+ *
+ * @param mixed $value Raw option value.
+ * @return string JSON-encoded sanitized profile.
+ */
+function gleo_sanitize_practice_profile_json( $value ) {
+	if ( is_string( $value ) && '' !== trim( $value ) ) {
+		$decoded = json_decode( $value, true );
+	} elseif ( is_array( $value ) ) {
+		$decoded = $value;
+	} else {
+		$decoded = array();
+	}
+	if ( ! is_array( $decoded ) ) {
+		return '';
+	}
+
+	$valid_types = array( 'dentist', 'physician', 'medical_clinic', 'other' );
+	$days        = array( 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday' );
+
+	$out = array();
+
+	$raw_type = sanitize_text_field( (string) ( $decoded['practice_type'] ?? '' ) );
+	$out['practice_type'] = in_array( $raw_type, $valid_types, true ) ? $raw_type : '';
+
+	$out['specialty']    = sanitize_text_field( (string) ( $decoded['specialty'] ?? '' ) );
+	$out['booking_url']  = isset( $decoded['booking_url'] ) ? esc_url_raw( (string) $decoded['booking_url'] ) : '';
+
+	// Locations (cap at 5)
+	$out['locations'] = array();
+	if ( ! empty( $decoded['locations'] ) && is_array( $decoded['locations'] ) ) {
+		foreach ( array_slice( $decoded['locations'], 0, 5 ) as $loc ) {
+			if ( ! is_array( $loc ) ) {
+				continue;
+			}
+			$clean_loc = array(
+				'label'  => sanitize_text_field( (string) ( $loc['label']  ?? '' ) ),
+				'street' => sanitize_text_field( (string) ( $loc['street'] ?? '' ) ),
+				'city'   => sanitize_text_field( (string) ( $loc['city']   ?? '' ) ),
+				'state'  => sanitize_text_field( (string) ( $loc['state']  ?? '' ) ),
+				'zip'    => sanitize_text_field( (string) ( $loc['zip']    ?? '' ) ),
+				'phone'  => sanitize_text_field( (string) ( $loc['phone']  ?? '' ) ),
+				'hours'  => array(),
+			);
+			if ( ! empty( $loc['hours'] ) && is_array( $loc['hours'] ) ) {
+				foreach ( $days as $day ) {
+					if ( isset( $loc['hours'][ $day ] ) ) {
+						$clean_loc['hours'][ $day ] = sanitize_text_field( (string) $loc['hours'][ $day ] );
+					}
+				}
+			}
+			$out['locations'][] = $clean_loc;
+		}
+	}
+
+	// Providers (cap at 10)
+	$out['providers'] = array();
+	if ( ! empty( $decoded['providers'] ) && is_array( $decoded['providers'] ) ) {
+		foreach ( array_slice( $decoded['providers'], 0, 10 ) as $prov ) {
+			if ( ! is_array( $prov ) ) {
+				continue;
+			}
+			$out['providers'][] = array(
+				'name'        => sanitize_text_field( (string) ( $prov['name']        ?? '' ) ),
+				'credentials' => sanitize_text_field( (string) ( $prov['credentials'] ?? '' ) ),
+				'specialty'   => sanitize_text_field( (string) ( $prov['specialty']   ?? '' ) ),
+			);
+		}
+	}
+
+	// Insurance (cap at 20)
+	$out['insurance_accepted'] = array();
+	if ( ! empty( $decoded['insurance_accepted'] ) && is_array( $decoded['insurance_accepted'] ) ) {
+		foreach ( array_slice( $decoded['insurance_accepted'], 0, 20 ) as $ins ) {
+			$ins = sanitize_text_field( (string) $ins );
+			if ( '' !== $ins ) {
+				$out['insurance_accepted'][] = $ins;
+			}
+		}
+	}
+
+	// Target queries (cap at 10)
+	$out['target_queries'] = array();
+	if ( ! empty( $decoded['target_queries'] ) && is_array( $decoded['target_queries'] ) ) {
+		foreach ( array_slice( $decoded['target_queries'], 0, 10 ) as $q ) {
+			$q = sanitize_text_field( (string) $q );
+			if ( '' !== $q ) {
+				$out['target_queries'][] = $q;
+			}
+		}
+	}
+
+	return wp_json_encode( $out );
 }
 
 /**
@@ -120,6 +236,7 @@ function gleo_sanitize_social_links_json( $value ) {
 }
 
 // Include API Client & Modules
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-gleo-practice-profile.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-gleo-schema.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-gleo-sitemap.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-gleo-api-client.php';

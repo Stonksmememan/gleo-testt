@@ -67,15 +67,18 @@ function sanitizeContextualAssets(assets) {
 /**
  * Generates specifically contextual HTML elements dynamically based on the post.
  */
-async function generateContextualAssets(title, content) {
+async function generateContextualAssets(title, content, layoutMap = null) {
   const $ = cheerio.load(content || '');
   $('script, style, noscript, svg, path, iframe, nav, footer, header, aside').remove();
   const plainText = $('body').text().replace(/\s+/g, ' ').substring(0, 3000).trim();
+  const layoutHint = layoutMap?.sections?.length
+    ? `\nPage sections (context only — FAQ goes in a dedicated block): ${layoutMap.sections.map(s => s.label).join(', ')}.`
+    : '';
   try {
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
       contents: [
-        { role: "user", parts: [{ text: `Article title: ${title}\nArticle excerpt (from the page): ${plainText}\n\nWrite HTML snippets a real site owner would paste into WordPress. Sound like a knowledgeable human editor — warm, specific, never templated or salesy.\n\nBanned phrases (never use in headings or body): "a closer look", "closer look at", "key details", "what you need to know", "deep dive", "key takeaways", "important considerations", "data overview", "why choose us", "elevate your", marketing clichés. Also banned in headings: "How X works", "Background on X", "Overview of X", "What is X", "Basics of X" — use a specific, topic-grounded heading instead.\n\nFAQ questions must read exactly like real Google searches a customer would type. Good example: "How much does emergency pipe repair cost in Austin?" Bad example: "What is the operational framework of pipe repair?" Each question should be short, specific, and contain a concrete detail from the article when possible.\n\nNever output instructional placeholder text about statistics. For authority_html, use real numbers from the excerpt or leave empty.\n\nFormatting: H2 for main section titles only; H3 for FAQ questions. No fixed heights or overflow:hidden. Readable contrast.\n\nInclude: (1) FAQ with 2–3 H3 questions that real customers actually search for (price, booking, timing, expectations, location — never academic or generic questions), (2) one H2 section with a specific, useful paragraph grounded in the excerpt, (3) compact Q&A block, (4) one <p> with statistics as normal sentences if the excerpt supports it.` }] }
+        { role: "user", parts: [{ text: `Article title: ${title}\nArticle excerpt: ${plainText}${layoutHint}\n\nWrite HTML snippets for WordPress. Generated HTML is content-only — Gleo places it in a dedicated section, not mid-article. FAQ: H3 questions only (no H2 wrapper).\n\nBanned phrases: "a closer look", "key details", "what you need to know", "deep dive", "why choose us", "elevate your". Banned headings: "How X works", "Overview of X", "What is X".\n\nFAQ questions must read like real Google searches. Never output stat placeholder instructions.\n\nInclude: (1) FAQ 2–3 H3 questions, (2) one H2 + paragraph, (3) compact Q&A block, (4) one <p> with stats if excerpt supports it.` }] }
       ],
       config: {
         systemInstruction: "You are a senior editor for a small business website. Write natural, trustworthy copy that matches the excerpt. No SEO filler, no robotic templates, no generic section titles. Return strict JSON only.",
@@ -112,9 +115,10 @@ async function generateContextualAssets(title, content) {
  *
  * @param {Object} post - { id, title, content (Live HTML) }
  * @param {string} siteUrl - The WordPress site URL for brand detection
+ * @param {Object} [practiceProfile] - Optional practice profile from WordPress
  * @returns {Object} Full GEO report for this post
  */
-async function analyzePost(post, siteUrl = '') {
+async function analyzePost(post, siteUrl = '', practiceProfile = null) {
   const { id, title, content } = post;
   console.log(`  [GEO] Analyzing post ${id}: "${title}"`);
 
@@ -140,7 +144,10 @@ async function analyzePost(post, siteUrl = '') {
   const brandInclusionRate = calculateBrandInclusion(tavilyResults, siteUrl, title);
 
   // --- Step 3: Content Quality Signals (HTML Parsing) ---
-  const contentSignals = analyzeContentSignals(content, title);
+  const contentSignals = analyzeContentSignals(content, title, practiceProfile);
+
+  // --- Step 3b: Page layout map for safe content placement ---
+  const layoutMap = analyzePageLayout(content);
 
   // --- Step 4: GEO Score (0-100) ---
   const geoScore = calculateGeoScore(contentSignals, brandInclusionRate, tavilyResults);
@@ -149,7 +156,7 @@ async function analyzePost(post, siteUrl = '') {
   const jsonLdSchema = generateJsonLd(title, content, siteUrl);
   
   // --- Step 6: Generate Contextual Assets ---
-  const contextualAssets = await generateContextualAssets(title, content);
+  const contextualAssets = await generateContextualAssets(title, content, layoutMap);
 
   // --- Step 7: Build Specific Recommendations (Granular Scoring) ---
   const recommendations = generateRecommendations(contentSignals, brandInclusionRate, geoScore);
@@ -164,6 +171,7 @@ async function analyzePost(post, siteUrl = '') {
       contextual_assets: contextualAssets,
       recommendations,
       content_signals: contentSignals,
+      layout_map: layoutMap,
       ai_landscape: tavilyResults.slice(0, 3).map(r => ({
         title: r.title,
         url: r.url,
@@ -203,9 +211,63 @@ function calculateBrandInclusion(results, siteUrl, postTitle) {
 }
 
 /**
+ * Build a layout map from rendered HTML for safe GEO block placement.
+ */
+function analyzePageLayout(htmlContent) {
+  const $ = cheerio.load(htmlContent || '');
+  const root = $('.entry-content, .wp-block-post-content, article, main').first();
+  const scope = root.length ? root : $('body');
+
+  let builderDetected = '';
+  const html = htmlContent || '';
+  if (/elementor|_elementor|et_pb_|vc_row|fl-builder|wpb_wrapper/i.test(html)) {
+    builderDetected = 'page_builder';
+  }
+
+  const testimonialRe = /testimonial|review|what patients say|patient stories|our reviews/i;
+  const ctaRe = /contact|book (now|an appointment|online)|schedule|get in touch|request appointment|find us|location/i;
+
+  const sections = [];
+  scope.find('h2, h3').each((i, el) => {
+    const label = $(el).text().replace(/\s+/g, ' ').trim().substring(0, 80);
+    if (!label || label.length < 3) return;
+    const lower = label.toLowerCase();
+    let type = 'content';
+    if (testimonialRe.test(lower) || $(el).closest('[class*="testimonial"], [class*="review"]').length) {
+      type = 'testimonial';
+    } else if (ctaRe.test(lower) || $(el).nextAll('form, iframe').length) {
+      type = 'cta';
+    }
+    sections.push({
+      id: `sec_${i + 1}`,
+      label,
+      type,
+      safe_for_faq_after: type === 'content',
+    });
+  });
+
+  const ctaSection = sections.find(s => s.type === 'cta');
+  let confidence = 'high';
+  if (builderDetected) confidence = 'low';
+  else if (sections.length === 0) confidence = 'medium';
+
+  let recommendedStrategy = 'append_end';
+  if (confidence === 'low') recommendedStrategy = 'append_end';
+  else if (ctaSection) recommendedStrategy = 'append_before_cta';
+
+  return {
+    builder_detected: builderDetected,
+    confidence,
+    recommended_strategy: recommendedStrategy,
+    sections,
+    default_faq_placement: ctaSection ? `before:${ctaSection.id}` : 'append_end',
+  };
+}
+
+/**
  * Analyzes the post live HTML for the 5-pillar GEO quality signals using Cheerio.
  */
-function analyzeContentSignals(htmlContent, title) {
+function analyzeContentSignals(htmlContent, title, practiceProfile = null) {
   const $ = cheerio.load(htmlContent || '');
   
   // Re-load original HTML to check head for schema
@@ -235,10 +297,12 @@ function analyzeContentSignals(htmlContent, title) {
   const hasSchema = schemaScripts.length > 0;
   let hasFaqSchema = false;
   let hasOrgSchema = false;
+  let hasHealthcareSchema = false;
   schemaScripts.each((i, el) => {
     const txt = $(el).text();
     if (/FAQPage/i.test(txt)) hasFaqSchema = true;
     if (/Organization|LocalBusiness|Product|Person/i.test(txt)) hasOrgSchema = true;
+    if (/Dentist|Physician|MedicalClinic|MedicalBusiness/i.test(txt)) hasHealthcareSchema = true;
   });
 
   // ── 3. Content Quality ──
@@ -296,6 +360,42 @@ function analyzeContentSignals(htmlContent, title) {
   // Long paragraph detection (paragraphs > 80 words)
   const longParagraphs = paragraphs.filter(p => p.split(/\s+/).length > 80).length;
 
+  // ── Practice Profile Signals (Phase 2) ──
+  // NAP: phone number pattern + street address keywords in visible text
+  const hasNapSignals = /\(?\d{3}\)?[\s.\-]\d{3}[\s.\-]\d{4}|\+1[\s.\-]\d{3}[\s.\-]\d{3}[\s.\-]\d{4}/i.test(cleanText) &&
+    /\b(street|st\.|avenue|ave\.|boulevard|blvd|road|rd\.|drive|dr\.|suite|ste\.)\b/i.test(cleanText);
+
+  // Hours: openingHoursSpecification in JSON-LD or common hours text patterns
+  let hasHoursSignals = false;
+  schemaScripts.each((_, el) => {
+    if (/openingHoursSpecification|openingHours/i.test($full(el).text())) {
+      hasHoursSignals = true;
+    }
+  });
+  if (!hasHoursSignals) {
+    hasHoursSignals = /\b(mon|tue|wed|thu|fri|sat|sun)\w*[\s:]+\d{1,2}(:\d{2})?\s*(am|pm)/i.test(cleanText) ||
+      /hours?\s*:|\bopen\s+\d|\boffice\s+hours\b/i.test(cleanText);
+  }
+
+  // Booking link: matches profile URL or generic booking service patterns
+  const bookingUrl = practiceProfile?.booking_url || '';
+  let hasBookingLink = false;
+  if (bookingUrl) {
+    try {
+      const bookingHostname = new URL(bookingUrl).hostname;
+      $('a[href]').each((_, el) => {
+        const href = $full(el).attr('href') || '';
+        try { if (new URL(href).hostname === bookingHostname) hasBookingLink = true; } catch (_) {}
+      });
+    } catch (_) {}
+  }
+  if (!hasBookingLink) {
+    hasBookingLink = $('a[href]').toArray().some(el => {
+      const href = ($full(el).attr('href') || '').toLowerCase();
+      return /\/book|\/schedule|\/appointment|zocdoc\.com|localmed\.com|patientfusion\.com|healthgrades\.com\/appointment|opendental/i.test(href);
+    });
+  }
+
   return {
     word_count: wordCount,
     // Technical
@@ -329,7 +429,12 @@ function analyzeContentSignals(htmlContent, title) {
     has_images: imageCount > 0,
     paragraph_count: paragraphs.length,
     avg_paragraph_length: avgParagraphLength,
-    long_paragraphs: longParagraphs
+    long_paragraphs: longParagraphs,
+    // Practice profile signals (Phase 2)
+    has_healthcare_schema: hasHealthcareSchema,
+    has_nap_signals: hasNapSignals,
+    has_hours_signals: hasHoursSignals,
+    has_booking_link: hasBookingLink,
   };
 }
 
@@ -352,9 +457,15 @@ function calculateGeoScore(signals, brandRate, tavilyResults) {
   if (signals.has_llms_txt) score += 5;
 
   // ── 2. Structured Data & Schema (max 20) ──
-  if (signals.has_schema) score += 10;
-  if (signals.has_faq_schema) score += 5;
-  if (signals.has_org_schema) score += 5;
+  let pillar2 = 0;
+  if (signals.has_schema) pillar2 += 10;
+  if (signals.has_faq_schema) pillar2 += 5;
+  if (signals.has_org_schema) pillar2 += 5;
+  // Practice profile detection signals (+3/+2/+2, capped at pillar max of 20)
+  if (signals.has_nap_signals) pillar2 += 3;
+  if (signals.has_hours_signals) pillar2 += 2;
+  if (signals.has_booking_link) pillar2 += 2;
+  score += Math.min(20, pillar2);
 
   // ── 3. Content Quality (max 30) ──
   // Depth: 10 pts
@@ -523,12 +634,19 @@ function generateRecommendations(signals, brandRate, geoScore) {
     if (signals.has_schema) score += 10;
     if (signals.has_faq_schema) score += 5;
     if (signals.has_org_schema) score += 5;
-    
+    if (signals.has_nap_signals) score += 3;
+    if (signals.has_hours_signals) score += 2;
+    if (signals.has_booking_link) score += 2;
+    score = Math.min(20, score);
+
     if (score < 20) {
       const issues = [];
       if (!signals.has_schema) issues.push('Deploy JSON-LD schema markup so AI understands your content');
       if (!signals.has_faq_schema) issues.push('Add FAQPage schema — matches the Q&A format AI loves');
       if (!signals.has_org_schema) issues.push('Add Organization/LocalBusiness/Product schemas as needed');
+      if (!signals.has_nap_signals) issues.push('Add your practice name, address, and phone to this page');
+      if (!signals.has_hours_signals) issues.push('List office hours on this page so patients find them in AI results');
+      if (!signals.has_booking_link) issues.push('Add a booking link so AI can recommend appointment scheduling');
       recs.push({
         priority: !signals.has_schema ? 'critical' : 'medium',
         area: 'Technical & Schema',

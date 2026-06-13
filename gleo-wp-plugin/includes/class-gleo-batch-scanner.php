@@ -134,10 +134,11 @@ class Gleo_Batch_Scanner {
 		$table_name = $wpdb->prefix . 'gleo_scans';
 
 		$payload = array(
-			'batch_id' => uniqid( 'rescan_' ),
-			'webhook'  => rest_url( 'gleo/v1/scan/webhook' ),
-			'site_url' => get_site_url(),
-			'posts'    => array(),
+			'batch_id'         => uniqid( 'rescan_' ),
+			'webhook'          => rest_url( 'gleo/v1/scan/webhook' ),
+			'site_url'         => get_site_url(),
+			'practice_profile' => class_exists( 'Gleo_Practice_Profile' ) ? Gleo_Practice_Profile::get() : array(),
+			'posts'            => array(),
 		);
 
 		$api_client = new Gleo_API_Client();
@@ -227,10 +228,11 @@ class Gleo_Batch_Scanner {
         $wpdb->query( "TRUNCATE TABLE $table_name" );
 
 		$payload = array(
-			'batch_id' => uniqid('batch_'),
-			'webhook'  => rest_url( 'gleo/v1/scan/webhook' ),
-			'site_url' => get_site_url(),
-			'posts'    => array(),
+			'batch_id'         => uniqid( 'batch_' ),
+			'webhook'          => rest_url( 'gleo/v1/scan/webhook' ),
+			'site_url'         => get_site_url(),
+			'practice_profile' => class_exists( 'Gleo_Practice_Profile' ) ? Gleo_Practice_Profile::get() : array(),
+			'posts'            => array(),
 		);
 
 		$api_client = new Gleo_API_Client();
