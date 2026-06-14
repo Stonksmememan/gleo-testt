@@ -102,6 +102,47 @@ function gleo_register_settings() {
 		'show_in_rest'      => true,
 		'default'           => 'append_end',
 	) );
+
+	register_setting( 'gleo_settings', 'gleo_design_profile', array(
+		'type'              => 'string',
+		'sanitize_callback' => 'gleo_sanitize_design_profile_json',
+		'show_in_rest'      => true,
+		'default'           => '',
+	) );
+}
+
+/**
+ * Sanitize design profile JSON for gleo_design_profile.
+ *
+ * @param mixed $value Raw option value.
+ * @return string JSON-encoded sanitized profile.
+ */
+function gleo_sanitize_design_profile_json( $value ) {
+	if ( is_string( $value ) && '' !== trim( $value ) ) {
+		$decoded = json_decode( $value, true );
+	} elseif ( is_array( $value ) ) {
+		$decoded = $value;
+	} else {
+		$decoded = array();
+	}
+	if ( ! is_array( $decoded ) ) {
+		return '';
+	}
+
+	$color_keys = array( 'accent', 'text', 'muted', 'card', 'surface', 'border' );
+	$out = array(
+		'enabled'    => ! empty( $decoded['enabled'] ),
+		'page_wide'  => ! empty( $decoded['page_wide'] ),
+		'source'     => sanitize_text_field( (string) ( $decoded['source'] ?? 'user' ) ),
+		'updated_at' => sanitize_text_field( (string) ( $decoded['updated_at'] ?? '' ) ),
+	);
+
+	foreach ( $color_keys as $key ) {
+		$raw = sanitize_hex_color( (string) ( $decoded[ $key ] ?? '' ) );
+		$out[ $key ] = $raw ?? '';
+	}
+
+	return wp_json_encode( $out );
 }
 
 /**

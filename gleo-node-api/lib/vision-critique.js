@@ -67,14 +67,12 @@ Goals:
 
 ${captureError ? `Screenshot unavailable (${captureError}). Base your review on URL/title only and be conservative.` : 'A screenshot of the live page is attached.'}
 
-Return strict JSON:
-{
-  "visual_score": 1-10 (10 = polished, on-brand, readable),
-  "passed": boolean (true if no follow-up needed),
-  "summary": "2-3 sentences for the site owner",
-  "issues": ["short bullet", ...],
-  "follow_up_fix_types": [] // subset of: ${allowedFixes.join(', ')} — only if clearly needed
-}`;
+Also evaluate the visual design of Gleo-injected content blocks (FAQ accordions, stats callouts, expert quotes). These are card/accordion-style blocks that may clash with the site's color scheme.
+- Focus design feedback ONLY on these injected blocks, not the full site redesign.
+- Suggest a cohesive hex color palette for these blocks that harmonizes with the existing site branding.
+- Do NOT recommend changing logos, fonts, or page builder layouts.
+
+Return strict JSON with these fields.`;
 
   const parts = [{ text: textPrompt }];
   if (screenshotBase64) {
@@ -100,14 +98,28 @@ Return strict JSON:
             summary: { type: 'STRING' },
             issues: { type: 'ARRAY', items: { type: 'STRING' } },
             follow_up_fix_types: { type: 'ARRAY', items: { type: 'STRING' } },
+            design_issues: { type: 'ARRAY', items: { type: 'STRING' } },
+            recommend_design_polish: { type: 'BOOLEAN' },
+            suggested_palette: {
+              type: 'OBJECT',
+              properties: {
+                accent:  { type: 'STRING' },
+                text:    { type: 'STRING' },
+                muted:   { type: 'STRING' },
+                card:    { type: 'STRING' },
+                surface: { type: 'STRING' },
+                border:  { type: 'STRING' },
+              },
+            },
           },
-          required: ['visual_score', 'passed', 'summary', 'issues', 'follow_up_fix_types'],
+          required: ['visual_score', 'passed', 'summary', 'issues', 'follow_up_fix_types', 'design_issues', 'recommend_design_polish', 'suggested_palette'],
         },
       },
     });
 
     const parsed = JSON.parse(response.text);
     const follow = (parsed.follow_up_fix_types || []).filter((t) => allowedFixes.includes(t));
+    const palette = parsed.suggested_palette || {};
     return {
       visual_score: Math.max(1, Math.min(10, Math.round(parsed.visual_score || 5))),
       passed: Boolean(parsed.passed),
@@ -115,6 +127,16 @@ Return strict JSON:
       issues: Array.isArray(parsed.issues) ? parsed.issues : [],
       follow_up_fix_types: follow,
       slop_detected: GENERIC_SLOP.some((re) => re.test(parsed.summary || '')),
+      design_issues: Array.isArray(parsed.design_issues) ? parsed.design_issues : [],
+      recommend_design_polish: Boolean(parsed.recommend_design_polish),
+      suggested_palette: {
+        accent:  palette.accent  || '',
+        text:    palette.text    || '',
+        muted:   palette.muted   || '',
+        card:    palette.card    || '',
+        surface: palette.surface || '',
+        border:  palette.border  || '',
+      },
     };
   } catch (err) {
     console.error('[Vision] Gemini critique failed:', err.message);
@@ -125,6 +147,9 @@ Return strict JSON:
       issues: [],
       follow_up_fix_types: [],
       slop_detected: false,
+      design_issues: [],
+      recommend_design_polish: false,
+      suggested_palette: { accent: '', text: '', muted: '', card: '', surface: '', border: '' },
       critique_error: err.message,
     };
   }

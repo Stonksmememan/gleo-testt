@@ -247,6 +247,25 @@ GLEO_CSS;
 	}
 
 	/**
+	 * Darken a hex color by subtracting an integer amount from each RGB channel.
+	 *
+	 * @param string $hex    Hex color (e.g. '#3b82f6').
+	 * @param int    $amount Amount to subtract from each channel (0–255).
+	 * @return string Darkened hex color.
+	 */
+	private function darken_hex( $hex, $amount = 20 ) {
+		$hex = ltrim( $hex, '#' );
+		if ( strlen( $hex ) === 3 ) {
+			$hex = $hex[0] . $hex[0] . $hex[1] . $hex[1] . $hex[2] . $hex[2];
+		}
+		if ( strlen( $hex ) !== 6 ) return '#000000';
+		$r = max( 0, hexdec( substr( $hex, 0, 2 ) ) - $amount );
+		$g = max( 0, hexdec( substr( $hex, 2, 2 ) ) - $amount );
+		$b = max( 0, hexdec( substr( $hex, 4, 2 ) ) - $amount );
+		return sprintf( '#%02x%02x%02x', $r, $g, $b );
+	}
+
+	/**
 	 * Return appropriate text color (dark or light) based on background luminance.
 	 */
 	private function get_adaptive_text_color( $bg_hex ) {
@@ -265,13 +284,92 @@ GLEO_CSS;
 	}
 
 	/**
+	 * Retrieve the design profile for a post, merging site default with per-post override.
+	 *
+	 * @param int $post_id Optional post ID for per-post meta lookup.
+	 * @return array{enabled: bool, accent: string, text: string, muted: string, card: string, surface: string, border: string, source: string}
+	 */
+	public static function get_design_profile( $post_id = 0 ) {
+		$defaults = array(
+			'enabled'   => false,
+			'page_wide' => false,
+			'accent'    => '',
+			'text'      => '',
+			'muted'     => '',
+			'card'      => '',
+			'surface'   => '',
+			'border'    => '',
+			'source'    => '',
+		);
+
+		$site_raw = get_option( 'gleo_design_profile', '' );
+		$site     = array();
+		if ( is_string( $site_raw ) && '' !== $site_raw ) {
+			$decoded = json_decode( $site_raw, true );
+			if ( is_array( $decoded ) ) {
+				$site = $decoded;
+			}
+		}
+
+		if ( $post_id > 0 ) {
+			$post_raw = get_post_meta( $post_id, '_gleo_design_profile', true );
+			if ( is_string( $post_raw ) && '' !== $post_raw ) {
+				$post_data = json_decode( $post_raw, true );
+				if ( is_array( $post_data ) ) {
+					$site = array_merge( $site, $post_data );
+				}
+			}
+		}
+
+		return array_merge( $defaults, $site );
+	}
+
+	/**
 	 * Output CSS for all Gleo-injected content blocks.
 	 * Uses CSS custom properties so JS can always override colours based on the
 	 * element's actual rendered background — PHP cannot reliably detect dark sections.
 	 */
 	public function inject_content_styles() {
 		if ( ! is_singular( array( 'post', 'page' ) ) ) return;
-		$accent      = $this->get_theme_accent_color();
+
+		// Use user-saved design profile if enabled; otherwise fall back to theme accent.
+		$post_id = get_the_ID();
+		$profile = self::get_design_profile( $post_id ? (int) $post_id : 0 );
+
+		$using_profile = ! empty( $profile['enabled'] ) && ! empty( $profile['accent'] );
+		// #region agent log
+		$_gleo_log = wp_json_encode( array(
+			'sessionId' => '8b85ea', 'hypothesisId' => 'C-D',
+			'location'  => 'class-gleo-frontend.php:inject_content_styles',
+			'message'   => 'profile evaluated',
+			'data'      => array(
+				'post_id'               => $post_id,
+				'enabled'               => $profile['enabled'] ?? null,
+				'accent'                => $profile['accent'] ?? '',
+				'page_wide'             => $profile['page_wide'] ?? null,
+				'using_profile'         => $using_profile,
+				'will_inject_page_wide' => ( $using_profile && ! empty( $profile['page_wide'] ) ),
+			),
+			'timestamp' => round( microtime( true ) * 1000 ),
+		) );
+		file_put_contents( '/tmp/gleo-debug-8b85ea.log', $_gleo_log . "\n", FILE_APPEND );
+		// #endregion
+		if ( $using_profile ) {
+			$accent  = sanitize_hex_color( $profile['accent'] ) ?: $this->get_theme_accent_color();
+			$gc_text    = sanitize_hex_color( $profile['text'] )    ?: '#0f172a';
+			$gc_muted   = sanitize_hex_color( $profile['muted'] )   ?: '#64748b';
+			$gc_card    = sanitize_hex_color( $profile['card'] )    ?: '#ffffff';
+			$gc_surface = sanitize_hex_color( $profile['surface'] ) ?: '#f8fafc';
+			$gc_border  = sanitize_hex_color( $profile['border'] )  ?: '#e5e7eb';
+		} else {
+			$accent     = $this->get_theme_accent_color();
+			$gc_text    = '#0f172a';
+			$gc_muted   = '#64748b';
+			$gc_card    = '#ffffff';
+			$gc_surface = '#f8fafc';
+			$gc_border  = '#e5e7eb';
+		}
+
 		$accent_bg   = $this->hex_to_rgba( $accent, '0.06' );
 		$accent_mid  = $this->hex_to_rgba( $accent, '0.16' );
 		$accent_soft = $this->hex_to_rgba( $accent, '0.12' );
@@ -345,13 +443,13 @@ main .wp-block-columns .wp-block-column h2.wp-block-heading.gleo-section-heading
    the actual rendered background (light/dark sections).
    ─────────────────────────────────────────────────────────────────────── */
 :where(.gleo-faq-wrap, .gleo-stats-callout, .gleo-table-block, .gleo-opening-summary-wrap, .gleo-expert-quote) {
-  --gc-text:        #0f172a;
-  --gc-muted:       #64748b;
+  --gc-text:        <?php echo esc_attr( $gc_text ); ?>;
+  --gc-muted:       <?php echo esc_attr( $gc_muted ); ?>;
   --gc-subtle:      #94a3b8;
-  --gc-border:      #e5e7eb;
+  --gc-border:      <?php echo esc_attr( $gc_border ); ?>;
   --gc-border-soft: #eef0f3;
-  --gc-card:        #ffffff;
-  --gc-surface:     #f8fafc;
+  --gc-card:        <?php echo esc_attr( $gc_card ); ?>;
+  --gc-surface:     <?php echo esc_attr( $gc_surface ); ?>;
   --gc-hover:       #f1f5f9;
   --gc-accent:      <?php echo esc_attr( $accent ); ?>;
   --gc-accent-bg:   <?php echo esc_attr( $accent_bg ); ?>;
@@ -766,6 +864,112 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
   color: var(--gc-muted);
 }
 </style>
+<?php if ( $using_profile && ! empty( $profile['page_wide'] ) ) :
+	$accent_dark = $this->darken_hex( $accent, 18 );
+?>
+<style id="gleo-page-wide-styles">
+/* ── Gleo page-wide design polish ─────────────────────────────────────────
+   Applied only when the user enables "improve whole page" in Gleo admin.
+   Targets standard WordPress / theme elements using the saved palette.
+   Does NOT touch theme PHP files, Elementor markup, or page builder CSS.
+   ───────────────────────────────────────────────────────────────────── */
+
+/* Body text */
+body,
+.entry-content,
+.wp-block-post-content {
+  color: <?php echo esc_attr( $gc_text ); ?>;
+}
+
+/* Links */
+a,
+.entry-content a {
+  color: <?php echo esc_attr( $accent ); ?>;
+  text-decoration-color: <?php echo esc_attr( $accent_bg ); ?>;
+}
+a:hover,
+a:focus,
+.entry-content a:hover,
+.entry-content a:focus {
+  color: <?php echo esc_attr( $accent_dark ); ?>;
+  text-decoration-color: <?php echo esc_attr( $accent ); ?>;
+}
+
+/* Headings — keep theme font; just update color */
+h1, h2, h3, h4, h5, h6,
+.entry-content h1,
+.entry-content h2,
+.entry-content h3,
+.entry-content h4 {
+  color: <?php echo esc_attr( $gc_text ); ?>;
+}
+
+/* WP block buttons */
+.wp-block-button__link,
+.wp-block-button .wp-block-button__link {
+  background-color: <?php echo esc_attr( $accent ); ?> !important;
+  border-color: <?php echo esc_attr( $accent ); ?> !important;
+  color: #ffffff !important;
+}
+.wp-block-button__link:hover,
+.wp-block-button .wp-block-button__link:hover,
+.wp-block-button__link:focus,
+.wp-block-button .wp-block-button__link:focus {
+  background-color: <?php echo esc_attr( $accent_dark ); ?> !important;
+  border-color: <?php echo esc_attr( $accent_dark ); ?> !important;
+}
+
+/* Outline-style WP buttons */
+.wp-block-button.is-style-outline .wp-block-button__link,
+.wp-block-button.is-style-outline .wp-block-button__link:hover {
+  color: <?php echo esc_attr( $accent ); ?> !important;
+  border-color: <?php echo esc_attr( $accent ); ?> !important;
+  background-color: transparent !important;
+}
+
+/* Form submit buttons */
+input[type="submit"],
+button[type="submit"],
+.wpcf7-submit,
+.tml-submit-wrap input {
+  background-color: <?php echo esc_attr( $accent ); ?>;
+  border-color: <?php echo esc_attr( $accent ); ?>;
+  color: #ffffff;
+}
+input[type="submit"]:hover,
+button[type="submit"]:hover {
+  background-color: <?php echo esc_attr( $accent_dark ); ?>;
+  border-color: <?php echo esc_attr( $accent_dark ); ?>;
+}
+
+/* Horizontal rules / dividers */
+hr,
+.wp-block-separator {
+  border-color: <?php echo esc_attr( $gc_border ); ?>;
+}
+
+/* Blockquotes */
+blockquote,
+.wp-block-quote {
+  border-left-color: <?php echo esc_attr( $accent ); ?>;
+  background-color: <?php echo esc_attr( $gc_surface ); ?>;
+  color: <?php echo esc_attr( $gc_muted ); ?>;
+}
+
+/* WP Group / Cover blocks with a solid background matching card color */
+.wp-block-group.has-background {
+  background-color: <?php echo esc_attr( $gc_surface ); ?>;
+  border-color: <?php echo esc_attr( $gc_border ); ?>;
+}
+
+/* Sidebar widgets */
+.widget-title,
+.widgettitle {
+  color: <?php echo esc_attr( $gc_text ); ?>;
+  border-bottom-color: <?php echo esc_attr( $accent ); ?>;
+}
+</style>
+<?php endif; ?>
 <script>
 (function () {
   /* ── Helpers ──────────────────────────────────────────────────────────── */

@@ -160,6 +160,121 @@ const FaqPlacementModal = ({ layoutMap, onSubmit, onCancel }) => {
     );
 };
 
+// ── Design Polish Modal ───────────────────────────────────────────────────────
+const PALETTE_LABELS = {
+    accent:  'Accent (buttons, links, highlights)',
+    text:    'Body text',
+    muted:   'Muted / secondary text',
+    card:    'Card background',
+    surface: 'Surface / section background',
+    border:  'Borders',
+};
+
+const DesignPolishModal = ({ critique, postId, siteWideDefault, onApplied, onCancel }) => {
+    const suggested = critique?.suggested_palette || {};
+    const [colors, setColors] = React.useState({
+        accent:  suggested.accent  || '#3b82f6',
+        text:    suggested.text    || '#0f172a',
+        muted:   suggested.muted   || '#64748b',
+        card:    suggested.card    || '#ffffff',
+        surface: suggested.surface || '#f8fafc',
+        border:  suggested.border  || '#e5e7eb',
+    });
+    const [siteWide, setSiteWide] = React.useState(siteWideDefault ?? false);
+    const [pageWide, setPageWide] = React.useState(false);
+    const [applying, setApplying] = React.useState(false);
+
+    const applyPreset = (preset) => {
+        if (preset === 'ai') {
+            setColors({
+                accent:  suggested.accent  || '#3b82f6',
+                text:    suggested.text    || '#0f172a',
+                muted:   suggested.muted   || '#64748b',
+                card:    suggested.card    || '#ffffff',
+                surface: suggested.surface || '#f8fafc',
+                border:  suggested.border  || '#e5e7eb',
+            });
+        } else if (preset === 'reset') {
+            setColors({ accent: '', text: '', muted: '', card: '', surface: '', border: '' });
+        }
+    };
+
+    const handleApply = async () => {
+        setApplying(true);
+        // #region agent log
+        fetch('http://127.0.0.1:7898/ingest/7384af93-f840-4225-9885-a251d9e6d233',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8b85ea'},body:JSON.stringify({sessionId:'8b85ea',hypothesisId:'A',location:'index.js:handleApply',message:'apply fired',data:{pageWide,siteWide,postId,accent:colors.accent,enabled:true},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+        const payload = { enabled: true, page_wide: pageWide, source: 'user', ...colors };
+        // #region agent log
+        fetch('http://127.0.0.1:7898/ingest/7384af93-f840-4225-9885-a251d9e6d233',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8b85ea'},body:JSON.stringify({sessionId:'8b85ea',hypothesisId:'B',location:'index.js:handleApply',message:'payload after spread',data:{enabled:payload.enabled,page_wide:payload.page_wide,accent:payload.accent},timestamp:Date.now()})}).catch(()=>{});
+        // #endregion
+        try {
+            await apiFetch({
+                path: '/gleo/v1/design/apply',
+                method: 'POST',
+                data: {
+                    post_id: siteWide ? 0 : postId,
+                    site_wide: siteWide,
+                    profile: payload,
+                },
+            });
+            onApplied && onApplied(colors);
+        } catch (e) {
+            // swallow — caller handles rescan / toast
+        } finally {
+            setApplying(false);
+        }
+    };
+
+    const issues = critique?.design_issues || [];
+    return (
+        <div className="gleo-modal-backdrop" onClick={onCancel}>
+            <div className="gleo-modal" style={{ maxWidth: 460 }} onClick={e => e.stopPropagation()}>
+                <h3>Improve page design</h3>
+                <p className="gleo-modal-prompt">Choose your palette — Gleo applies it to the page without touching theme files or page builder markup.</p>
+                {issues.length > 0 && (
+                    <ul style={{ fontSize: 12, color: 'var(--fg-muted)', marginBottom: 12, paddingLeft: 16 }}>
+                        {issues.map((iss, i) => <li key={i}>{iss}</li>)}
+                    </ul>
+                )}
+                <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
+                    {suggested.accent && (
+                        <button className="gleo-btn gleo-btn-outline" style={{ fontSize: 11, padding: '4px 10px' }} onClick={() => applyPreset('ai')}>Use AI suggestion</button>
+                    )}
+                    <button className="gleo-btn gleo-btn-outline" style={{ fontSize: 11, padding: '4px 10px' }} onClick={() => applyPreset('reset')}>Reset to theme</button>
+                </div>
+                {Object.entries(PALETTE_LABELS).map(([key, label]) => (
+                    <div key={key} className="gleo-field" style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                        <input type="color" value={colors[key] || '#888888'} onChange={e => setColors(p => ({ ...p, [key]: e.target.value }))}
+                            style={{ width: 32, height: 32, border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', padding: 2 }} />
+                        <label style={{ fontSize: 13, flex: 1 }}>{label}</label>
+                        <input type="text" value={colors[key]} onChange={e => setColors(p => ({ ...p, [key]: e.target.value }))}
+                            style={{ width: 90, fontSize: 12 }} className="gleo-input" placeholder="#rrggbb" />
+                    </div>
+                ))}
+                <div style={{ borderTop: '1px solid var(--border)', marginTop: 14, paddingTop: 14 }}>
+                    <p style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--fg-muted)', marginBottom: 10 }}>Scope</p>
+                    <label style={{ fontSize: 13, display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 10, cursor: 'pointer' }}>
+                        <input type="checkbox" checked={pageWide} onChange={e => setPageWide(e.target.checked)} style={{ marginTop: 2 }} />
+                        <span>
+                            <strong>Improve whole page</strong> — also style links, headings, and buttons using the palette above
+                            <br/><span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>Without this, only Gleo FAQ/stats/quote blocks change color.</span>
+                        </span>
+                    </label>
+                    <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                        <input type="checkbox" checked={siteWide} onChange={e => setSiteWide(e.target.checked)} />
+                        Apply to all pages site-wide (not just this page)
+                    </label>
+                </div>
+                <div className="gleo-modal-actions" style={{ marginTop: 16 }}>
+                    <button className="gleo-btn gleo-btn-outline" onClick={onCancel} disabled={applying}>Skip</button>
+                    <button className="gleo-btn gleo-btn-primary" onClick={handleApply} disabled={applying}>{applying ? 'Applying…' : 'Apply design'}</button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
 // ── Input Modal ──────────────────────────────────────────────────────────────
 const InputModal = ({ title, prompt, inputType, onSubmit, onCancel }) => {
     const [value, setValue] = useState('');
@@ -897,6 +1012,7 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
     const [optimizeStepIdx, setOptimizeStepIdx] = useState(0);
     const [optimizeDetail, setOptimizeDetail]   = useState('');
     const [optimizeDone, setOptimizeDone]       = useState(false);
+    const [designModal, setDesignModal]         = useState(null); // { critique }
     const OPTIMIZE_STEPS = 5;
 
     const siteUrl = typeof gleoData !== 'undefined' ? gleoData.siteUrl : '';
@@ -1284,6 +1400,13 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
                 setStep( 3, 'No extra refinements needed', critique?.summary || 'Page passed visual review.' );
             }
 
+            // Offer design polish if AI recommends it or visual score is below 8.
+            if ( critique && ( critique.recommend_design_polish || ( critique.visual_score != null && critique.visual_score < 8 ) ) ) {
+                setOptimizeDone( true );
+                setDesignModal( { critique } );
+                return; // Resume after user dismisses modal (rescan happens on close).
+            }
+
             setStep( 4, 'Re-scoring your page…' );
             await apiFetch( { path: '/gleo/v1/scan/rescan-post', method: 'POST', data: { post_id } } );
             const fresh = await pollRescanResult( prevScore );
@@ -1395,6 +1518,10 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
                         Move FAQ to another section
                     </button>
                 )}
+                <button type="button" className="gleo-btn gleo-btn-outline" style={{ fontSize: 12, marginTop: 8 }}
+                    onClick={() => setDesignModal({ critique: result.last_critique || {} })}>
+                    Improve Gleo block design
+                </button>
             </div>
 
             { showReportBody && (
@@ -1522,6 +1649,28 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
                 <InputModal title={modal.title} prompt={modal.prompt} inputType={modal.inputType}
                     onSubmit={input => { doApply(modal.fixType, input); setModal(null); }}
                     onCancel={() => setModal(null)}/>
+            )}
+            {designModal && (
+                <DesignPolishModal
+                    critique={designModal.critique}
+                    postId={post_id}
+                    siteWideDefault={false}
+                    onApplied={async () => {
+                        setDesignModal(null);
+                        addToast('Design applied. Rescanning…');
+                        const prevScore = typeof result.geo_score === 'number' ? result.geo_score : null;
+                        try {
+                            await apiFetch({ path: '/gleo/v1/scan/rescan-post', method: 'POST', data: { post_id } });
+                            const fresh = await pollRescanResult(prevScore);
+                            if (fresh && onReportUpdated) onReportUpdated(post_id, fresh);
+                        } catch (_) {}
+                        setOptimizeOpen(false);
+                    }}
+                    onCancel={() => {
+                        setDesignModal(null);
+                        setOptimizeOpen(false);
+                    }}
+                />
             )}
         </div>
     );
