@@ -39,9 +39,10 @@ const FIX_CONFIG = {
     authority:        { label: 'Add Statistics',        needsInput: true,  prompt: 'Paste one statistic and its source (one short paragraph):', inputType: 'text', successMsg: 'A statistics callout was added using your text.' },
     credibility:      { label: 'Add Sources',           needsInput: true,  prompt: 'Paste URLs to authoritative sources (one per line):', inputType: 'lines', successMsg: 'A Sources & References section has been added to your post.' },
     opening_summary:  { label: 'Add AI-readable summary', needsInput: false, successMsg: 'A concise summary was saved for AI crawlers (in page metadata — not shown as a visible “In brief” box).' },
-    image_alt_text:   { label: 'Improve image alt text', needsInput: false, successMsg: 'Missing or empty image descriptions were filled using your post title (and saved on the attachments where possible).' },
-    robots_txt_allow: { label: 'Allow AI crawlers (robots.txt)', needsInput: false, successMsg: 'Your site robots.txt now includes explicit Allow rules for common AI crawlers (site-wide).' },
-    expert_quotes:    { label: 'Add expert perspective', needsInput: false, successMsg: 'A short expert-perspective quote block was added to the article.' },
+    image_alt_text:       { label: 'Improve image alt text', needsInput: false, successMsg: 'Missing or empty image descriptions were filled using your post title (and saved on the attachments where possible).' },
+    robots_txt_allow:     { label: 'Allow AI crawlers (robots.txt)', needsInput: false, successMsg: 'Your site robots.txt now includes explicit Allow rules for common AI crawlers (site-wide).' },
+    expert_quotes:        { label: 'Add expert perspective', needsInput: false, successMsg: 'A short expert-perspective quote block was added to the article.' },
+    visual_enhancement:   { label: 'Improve website appearance', needsInput: false, successMsg: 'Visual enhancements applied — images, layout, and styling updated.' },
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -269,6 +270,175 @@ const DesignPolishModal = ({ critique, postId, siteWideDefault, onApplied, onCan
                 <div className="gleo-modal-actions" style={{ marginTop: 16 }}>
                     <button className="gleo-btn gleo-btn-outline" onClick={onCancel} disabled={applying}>Skip</button>
                     <button className="gleo-btn gleo-btn-primary" onClick={handleApply} disabled={applying}>{applying ? 'Applying…' : 'Apply design'}</button>
+                </div>
+            </div>
+        </div>
+    );
+};
+
+// ── Visual Enhancement Modal ──────────────────────────────────────────────────
+const VISUAL_PRESETS = [
+    {
+        id: 'clean',
+        name: 'Clean & Modern',
+        desc: 'Clear heading hierarchy, comfortable reading width, elegant spacing, polished image shadows.',
+        preview: ['H2 with bottom border', '17px body text', 'Centered 720px content', 'Rounded image corners'],
+    },
+    {
+        id: 'editorial',
+        name: 'Editorial',
+        desc: 'Larger text, generous line spacing, prominent lead paragraph — great for blogs and long reads.',
+        preview: ['18px body / 1.88 line-height', 'Large expressive headings', 'Lead paragraph styling', 'Article-style typography'],
+    },
+    {
+        id: 'bold',
+        name: 'Bold & Structured',
+        desc: 'Strong accent-coloured H2 sections, uppercase H3 labels, high contrast — ideal for service pages.',
+        preview: ['H2 with accent sidebar', 'Uppercase H3 labels', 'High-contrast sections', 'Section separation'],
+    },
+];
+
+const VisualEnhancementModal = ({ plan, postId, onApplied, onCancel }) => {
+    const suggested = plan?.suggested_palette || {};
+    const hasHero   = (plan?.image_plan || []).some(s => s.action === 'add_hero') && plan?.unsplash_photo?.url;
+
+    const [preset,      setPreset]      = React.useState('clean');
+    const [applyImages, setApplyImages] = React.useState(hasHero);
+    const [pageWide,    setPageWide]    = React.useState(plan?.recommend_page_wide ?? false);
+    const [showPalette, setShowPalette] = React.useState(false);
+    const [applying,    setApplying]    = React.useState(false);
+    const [colors, setColors] = React.useState({
+        accent:  suggested.accent  || '#3b82f6',
+        text:    suggested.text    || '#0f172a',
+        muted:   suggested.muted   || '#64748b',
+        card:    suggested.card    || '#ffffff',
+        surface: suggested.surface || '#f8fafc',
+        border:  suggested.border  || '#e5e7eb',
+    });
+
+    const handleApply = async () => {
+        setApplying(true);
+        try {
+            await apiFetch({
+                path: '/gleo/v1/appearance/apply',
+                method: 'POST',
+                data: {
+                    post_id:        postId,
+                    layout_preset:  preset,
+                    page_wide:      pageWide,
+                    palette:        colors,
+                    apply_images:   applyImages,
+                    unsplash_photo: applyImages ? (plan?.unsplash_photo || null) : null,
+                },
+            });
+            onApplied && onApplied();
+        } catch (e) {
+            // swallow — caller handles rescan / toast
+        } finally {
+            setApplying(false);
+        }
+    };
+
+    const issues = plan?.issues || [];
+    const photo  = plan?.unsplash_photo;
+
+    return (
+        <div className="gleo-modal-backdrop" onClick={onCancel}>
+            <div className="gleo-modal" style={{ maxWidth: 520 }} onClick={e => e.stopPropagation()}>
+                <h3>Improve website appearance</h3>
+                <p style={{ fontSize: 13, color: 'var(--fg-muted)', marginBottom: 14 }}>
+                    Gleo applies a comprehensive visual design layer — typography, spacing, heading hierarchy, image polish — without touching your theme files. Pick a style:
+                </p>
+
+                {/* AI issues summary */}
+                {issues.length > 0 && (
+                    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, padding: '8px 12px', marginBottom: 14 }}>
+                        <p style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-muted)', marginBottom: 4 }}>AI-detected issues</p>
+                        <ul style={{ fontSize: 12, color: 'var(--fg-muted)', paddingLeft: 16, margin: 0 }}>
+                            {issues.slice(0, 3).map((iss, i) => <li key={i}>{iss}</li>)}
+                        </ul>
+                    </div>
+                )}
+
+                {/* Preset cards */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
+                    {VISUAL_PRESETS.map(p => (
+                        <div key={p.id}
+                            onClick={() => setPreset(p.id)}
+                            style={{
+                                border: `2px solid ${preset === p.id ? 'var(--accent, #3b82f6)' : 'var(--border)'}`,
+                                borderRadius: 8,
+                                padding: '10px 14px',
+                                cursor: 'pointer',
+                                background: preset === p.id ? 'rgba(59,130,246,0.06)' : 'var(--surface)',
+                                transition: 'border-color 0.15s, background 0.15s',
+                            }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+                                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg)' }}>{p.name}</span>
+                                {preset === p.id && <span style={{ fontSize: 10, background: 'var(--accent, #3b82f6)', color: '#fff', borderRadius: 4, padding: '1px 6px' }}>Selected</span>}
+                            </div>
+                            <p style={{ fontSize: 12, color: 'var(--fg-muted)', margin: '0 0 6px' }}>{p.desc}</p>
+                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                                {p.preview.map((item, i) => (
+                                    <span key={i} style={{ fontSize: 10, background: 'var(--border)', color: 'var(--fg-muted)', borderRadius: 4, padding: '2px 6px' }}>{item}</span>
+                                ))}
+                            </div>
+                        </div>
+                    ))}
+                </div>
+
+                {/* Hero image preview */}
+                {hasHero && photo?.url && (
+                    <div style={{ marginBottom: 14, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
+                        <img src={photo.url} alt={photo.alt || 'Suggested hero image'} style={{ width: '100%', height: 130, objectFit: 'cover', display: 'block' }} />
+                        <div style={{ padding: '6px 10px', fontSize: 11, color: 'var(--fg-muted)', background: 'var(--surface)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span>{photo.credit || 'Unsplash'}</span>
+                            <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+                                <input type="checkbox" checked={applyImages} onChange={e => setApplyImages(e.target.checked)} />
+                                Add as hero image
+                            </label>
+                        </div>
+                    </div>
+                )}
+
+                {/* Options row */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 }}>
+                    <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
+                        <input type="checkbox" checked={pageWide} onChange={e => setPageWide(e.target.checked)} />
+                        Also apply accent colour to page-wide elements (links, buttons, headings)
+                    </label>
+                    <button
+                        type="button"
+                        className="gleo-btn gleo-btn-outline"
+                        style={{ fontSize: 11, padding: '4px 10px', alignSelf: 'flex-start' }}
+                        onClick={() => setShowPalette(v => !v)}>
+                        {showPalette ? 'Hide colour palette' : 'Customise colour palette'}
+                    </button>
+                </div>
+
+                {/* Collapsible palette picker */}
+                {showPalette && (
+                    <div style={{ marginBottom: 14, padding: '10px 12px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8 }}>
+                        <p style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-muted)', marginBottom: 10 }}>
+                            Colour palette (AI-suggested — edit if needed)
+                        </p>
+                        {Object.entries(PALETTE_LABELS).map(([key, label]) => (
+                            <div key={key} className="gleo-field" style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                                <input type="color" value={colors[key] || '#888888'} onChange={e => setColors(p => ({ ...p, [key]: e.target.value }))}
+                                    style={{ width: 28, height: 28, border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', padding: 2 }} />
+                                <label style={{ fontSize: 12, flex: 1 }}>{label}</label>
+                                <input type="text" value={colors[key]} onChange={e => setColors(p => ({ ...p, [key]: e.target.value }))}
+                                    style={{ width: 82, fontSize: 11 }} className="gleo-input" placeholder="#rrggbb" />
+                            </div>
+                        ))}
+                    </div>
+                )}
+
+                <div className="gleo-modal-actions" style={{ marginTop: 4 }}>
+                    <button className="gleo-btn gleo-btn-outline" onClick={onCancel} disabled={applying}>Skip</button>
+                    <button className="gleo-btn gleo-btn-primary" onClick={handleApply} disabled={applying}>
+                        {applying ? 'Applying…' : `Apply ${VISUAL_PRESETS.find(p => p.id === preset)?.name || ''} style`}
+                    </button>
                 </div>
             </div>
         </div>
@@ -1012,7 +1182,8 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
     const [optimizeStepIdx, setOptimizeStepIdx] = useState(0);
     const [optimizeDetail, setOptimizeDetail]   = useState('');
     const [optimizeDone, setOptimizeDone]       = useState(false);
-    const [designModal, setDesignModal]         = useState(null); // { critique }
+    const [designModal, setDesignModal]                     = useState(null); // { critique }
+    const [visualEnhancementModal, setVisualEnhancementModal] = useState(null); // { plan }
     const OPTIMIZE_STEPS = 5;
 
     const siteUrl = typeof gleoData !== 'undefined' ? gleoData.siteUrl : '';
@@ -1208,6 +1379,33 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
             });
         }
 
+        // ── 7. Visual Design (informational — triggers VisualEnhancementModal) ──
+        {
+            const critique  = result.last_critique || {};
+            const vscore    = typeof critique.visual_score === 'number' ? critique.visual_score : null;
+            const noImages  = cs.image_count === 0;
+            const hasIssues = critique.recommend_design_polish || ( vscore !== null && vscore < 7 ) || noImages;
+            const score     = vscore !== null ? vscore : ( hasIssues ? 3 : 8 );
+            const msg = score >= 8
+                ? 'The page looks polished. Images, spacing, and colours are in good shape.'
+                : noImages
+                    ? 'No images detected. Adding a hero image and improving spacing can make this page significantly more engaging.'
+                    : vscore !== null
+                        ? `Visual score ${vscore}/10. ${(critique.design_issues || []).slice(0, 2).join('. ')}${critique.design_issues?.length ? '.' : ''}`
+                        : 'Run "One-click optimize" to get an AI visual review and improvement suggestions.';
+            items.push({
+                priority: score >= 8 ? 'positive' : score <= 4 ? 'high' : 'medium',
+                area: 'Visual Design',
+                maxScore: 10,
+                score,
+                message: msg,
+                fixType: hasIssues ? 'visual_enhancement' : null,
+                extraFixes: [],
+                emoji: '🎨',
+                noAutofix: true,
+            });
+        }
+
         return items.map(item => {
             const autoTypes = collectAutoFixTypesForItem(item);
             const appliedRow = autoTypes.length === 0
@@ -1242,7 +1440,40 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
             .finally(() => setApplyingTypes(p => ({ ...p, [fixType]: false })));
     };
 
+    /**
+     * Run the appearance analysis via the Node API then open VisualEnhancementModal.
+     * If a cached plan exists in last_appearance_plan, use it directly.
+     */
+    const launchVisualEnhancement = async () => {
+        // If we already have a fresh plan from this session, show it immediately.
+        if ( result.last_appearance_plan ) {
+            setVisualEnhancementModal( { plan: result.last_appearance_plan } );
+            return;
+        }
+        addToast( 'Analyzing page appearance…' );
+        try {
+            const res = await apiFetch( {
+                path: '/gleo/v1/appearance/analyze',
+                method: 'POST',
+                data: { post_id },
+            } );
+            const plan = res?.data || {};
+            // Cache on the result object so repeated clicks don't re-analyze
+            if ( onReportUpdated ) {
+                onReportUpdated( post_id, { ...result, last_appearance_plan: plan } );
+            }
+            setVisualEnhancementModal( { plan } );
+        } catch ( e ) {
+            addToast( 'Appearance analysis failed — Node API may be offline.' );
+        }
+    };
+
     const applyCategoryFixes = async ( item ) => {
+        // Visual enhancement is modal-driven, not a batch apply
+        if ( item.fixType === 'visual_enhancement' ) {
+            launchVisualEnhancement();
+            return;
+        }
         const types = collectAutoFixTypesForItem( item );
         if ( types.length === 0 ) {
             return;
@@ -1268,6 +1499,10 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
         if (!config) return;
         if (fixType === 'faq') {
             setModal({ fixType: 'faq_placement', title: 'FAQ placement', layoutMap: result.layout_map || {} });
+            return;
+        }
+        if (fixType === 'visual_enhancement') {
+            launchVisualEnhancement();
             return;
         }
         if (config.needsInput) setModal({ fixType, title: config.label, prompt: config.prompt, inputType: config.inputType });
@@ -1400,8 +1635,34 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
                 setStep( 3, 'No extra refinements needed', critique?.summary || 'Page passed visual review.' );
             }
 
-            // Offer design polish if AI recommends it or visual score is below 8.
-            if ( critique && ( critique.recommend_design_polish || ( critique.visual_score != null && critique.visual_score < 8 ) ) ) {
+            // Offer visual enhancement if AI recommends it or visual score is below 7.
+            // Use the richer VisualEnhancementModal when the page needs appearance work
+            // (image additions, layout, typography). Fall back to DesignPolishModal for
+            // palette-only edits when the page is already structurally fine.
+            const needsFullEnhancement = critique && (
+                ( critique.visual_score != null && critique.visual_score < 7 )
+            );
+            const needsPaletteOnly = critique && !needsFullEnhancement && (
+                critique.recommend_design_polish || ( critique.visual_score != null && critique.visual_score < 8 )
+            );
+            if ( needsFullEnhancement ) {
+                setOptimizeDone( true );
+                setOptimizeDetail( critique.summary || '' );
+                // Run appearance analysis in the background then open the modal
+                try {
+                    const appRes = await apiFetch( {
+                        path: '/gleo/v1/appearance/analyze',
+                        method: 'POST',
+                        data: { post_id },
+                    } );
+                    setVisualEnhancementModal( { plan: appRes?.data || {} } );
+                } catch ( _e ) {
+                    // If analysis fails, fall back to the palette-only modal
+                    setDesignModal( { critique } );
+                }
+                return;
+            }
+            if ( needsPaletteOnly ) {
                 setOptimizeDone( true );
                 setDesignModal( { critique } );
                 return; // Resume after user dismisses modal (rescan happens on close).
@@ -1521,6 +1782,10 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
                 <button type="button" className="gleo-btn gleo-btn-outline" style={{ fontSize: 12, marginTop: 8 }}
                     onClick={() => setDesignModal({ critique: result.last_critique || {} })}>
                     Improve Gleo block design
+                </button>
+                <button type="button" className="gleo-btn gleo-btn-outline" style={{ fontSize: 12, marginTop: 8 }}
+                    onClick={launchVisualEnhancement}>
+                    Improve website appearance
                 </button>
             </div>
 
@@ -1670,6 +1935,24 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
                         setDesignModal(null);
                         setOptimizeOpen(false);
                     }}
+                />
+            )}
+            {visualEnhancementModal && (
+                <VisualEnhancementModal
+                    plan={visualEnhancementModal.plan}
+                    postId={post_id}
+                    onApplied={async () => {
+                        setVisualEnhancementModal(null);
+                        setAppliedTypes(p => ({ ...p, visual_enhancement: true }));
+                        addToast('Appearance improvements applied. Rescanning…');
+                        const prevScore = typeof result.geo_score === 'number' ? result.geo_score : null;
+                        try {
+                            await apiFetch({ path: '/gleo/v1/scan/rescan-post', method: 'POST', data: { post_id } });
+                            const fresh = await pollRescanResult(prevScore);
+                            if (fresh && onReportUpdated) onReportUpdated(post_id, fresh);
+                        } catch (_) {}
+                    }}
+                    onCancel={() => setVisualEnhancementModal(null)}
                 />
             )}
         </div>

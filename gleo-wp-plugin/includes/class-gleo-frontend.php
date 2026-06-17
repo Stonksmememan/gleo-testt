@@ -18,8 +18,12 @@ class Gleo_Frontend {
 		// /llms.txt is served dynamically (see serve_llms_txt); this <head> link lets crawlers and the Gleo scanner detect it.
 		add_action( 'wp_head', array( $this, 'inject_llms_link' ), 2 );
 
-		// Front-end styles for Gleo-injected content blocks
+		// Front-end styles for Gleo-injected content blocks (early priority keeps Gleo vars available)
 		add_action( 'wp_head', array( $this, 'inject_content_styles' ), 5 );
+		// Page-wide design polish (late priority = loads AFTER all theme stylesheets so it wins the cascade)
+		add_action( 'wp_head', array( $this, 'inject_page_wide_styles' ), 9999 );
+		// Visual enhancement: typography, spacing, and image CSS (runs immediately after page-wide palette)
+		add_action( 'wp_head', array( $this, 'inject_appearance_styles' ), 10000 );
 
 		// When loading a post inside the Gleo admin preview iframe, force full theme + block CSS
 		// so the page does not render as unstyled plain HTML (common with block themes / split bundles).
@@ -291,15 +295,19 @@ GLEO_CSS;
 	 */
 	public static function get_design_profile( $post_id = 0 ) {
 		$defaults = array(
-			'enabled'   => false,
-			'page_wide' => false,
-			'accent'    => '',
-			'text'      => '',
-			'muted'     => '',
-			'card'      => '',
-			'surface'   => '',
-			'border'    => '',
-			'source'    => '',
+			'enabled'       => false,
+			'page_wide'     => false,
+			'accent'        => '',
+			'text'          => '',
+			'muted'         => '',
+			'card'          => '',
+			'surface'       => '',
+			'border'        => '',
+			'source'        => '',
+			'layout_preset' => '',
+			'typography'    => array(),
+			'spacing'       => array(),
+			'images'        => array(),
 		);
 
 		$site_raw = get_option( 'gleo_design_profile', '' );
@@ -864,112 +872,6 @@ main :is(.gleo-stats-callout, .gleo-expert-quote, .gleo-table-block, .gleo-faq-w
   color: var(--gc-muted);
 }
 </style>
-<?php if ( $using_profile && ! empty( $profile['page_wide'] ) ) :
-	$accent_dark = $this->darken_hex( $accent, 18 );
-?>
-<style id="gleo-page-wide-styles">
-/* ── Gleo page-wide design polish ─────────────────────────────────────────
-   Applied only when the user enables "improve whole page" in Gleo admin.
-   Targets standard WordPress / theme elements using the saved palette.
-   Does NOT touch theme PHP files, Elementor markup, or page builder CSS.
-   ───────────────────────────────────────────────────────────────────── */
-
-/* Body text */
-body,
-.entry-content,
-.wp-block-post-content {
-  color: <?php echo esc_attr( $gc_text ); ?>;
-}
-
-/* Links */
-a,
-.entry-content a {
-  color: <?php echo esc_attr( $accent ); ?>;
-  text-decoration-color: <?php echo esc_attr( $accent_bg ); ?>;
-}
-a:hover,
-a:focus,
-.entry-content a:hover,
-.entry-content a:focus {
-  color: <?php echo esc_attr( $accent_dark ); ?>;
-  text-decoration-color: <?php echo esc_attr( $accent ); ?>;
-}
-
-/* Headings — keep theme font; just update color */
-h1, h2, h3, h4, h5, h6,
-.entry-content h1,
-.entry-content h2,
-.entry-content h3,
-.entry-content h4 {
-  color: <?php echo esc_attr( $gc_text ); ?>;
-}
-
-/* WP block buttons */
-.wp-block-button__link,
-.wp-block-button .wp-block-button__link {
-  background-color: <?php echo esc_attr( $accent ); ?> !important;
-  border-color: <?php echo esc_attr( $accent ); ?> !important;
-  color: #ffffff !important;
-}
-.wp-block-button__link:hover,
-.wp-block-button .wp-block-button__link:hover,
-.wp-block-button__link:focus,
-.wp-block-button .wp-block-button__link:focus {
-  background-color: <?php echo esc_attr( $accent_dark ); ?> !important;
-  border-color: <?php echo esc_attr( $accent_dark ); ?> !important;
-}
-
-/* Outline-style WP buttons */
-.wp-block-button.is-style-outline .wp-block-button__link,
-.wp-block-button.is-style-outline .wp-block-button__link:hover {
-  color: <?php echo esc_attr( $accent ); ?> !important;
-  border-color: <?php echo esc_attr( $accent ); ?> !important;
-  background-color: transparent !important;
-}
-
-/* Form submit buttons */
-input[type="submit"],
-button[type="submit"],
-.wpcf7-submit,
-.tml-submit-wrap input {
-  background-color: <?php echo esc_attr( $accent ); ?>;
-  border-color: <?php echo esc_attr( $accent ); ?>;
-  color: #ffffff;
-}
-input[type="submit"]:hover,
-button[type="submit"]:hover {
-  background-color: <?php echo esc_attr( $accent_dark ); ?>;
-  border-color: <?php echo esc_attr( $accent_dark ); ?>;
-}
-
-/* Horizontal rules / dividers */
-hr,
-.wp-block-separator {
-  border-color: <?php echo esc_attr( $gc_border ); ?>;
-}
-
-/* Blockquotes */
-blockquote,
-.wp-block-quote {
-  border-left-color: <?php echo esc_attr( $accent ); ?>;
-  background-color: <?php echo esc_attr( $gc_surface ); ?>;
-  color: <?php echo esc_attr( $gc_muted ); ?>;
-}
-
-/* WP Group / Cover blocks with a solid background matching card color */
-.wp-block-group.has-background {
-  background-color: <?php echo esc_attr( $gc_surface ); ?>;
-  border-color: <?php echo esc_attr( $gc_border ); ?>;
-}
-
-/* Sidebar widgets */
-.widget-title,
-.widgettitle {
-  color: <?php echo esc_attr( $gc_text ); ?>;
-  border-bottom-color: <?php echo esc_attr( $accent ); ?>;
-}
-</style>
-<?php endif; ?>
 <script>
 (function () {
   /* ── Helpers ──────────────────────────────────────────────────────────── */
@@ -1030,6 +932,445 @@ blockquote,
 }());
 </script>
 		<?php
+	}
+
+	/**
+	 * Inject page-wide design polish CSS at priority 9999 so it loads AFTER all
+	 * theme stylesheets and wins the cascade without needing extreme specificity.
+	 * Only outputs when the saved design profile has enabled=true AND page_wide=true.
+	 */
+	public function inject_page_wide_styles() {
+		if ( ! is_singular( array( 'post', 'page' ) ) ) return;
+
+		$post_id = get_the_ID();
+		$profile = self::get_design_profile( $post_id ? (int) $post_id : 0 );
+
+		if ( empty( $profile['enabled'] ) || empty( $profile['accent'] ) || empty( $profile['page_wide'] ) ) {
+			return;
+		}
+
+		$accent      = sanitize_hex_color( $profile['accent'] ) ?: $this->get_theme_accent_color();
+		$gc_text     = sanitize_hex_color( $profile['text'] )    ?: '#0f172a';
+		$gc_muted    = sanitize_hex_color( $profile['muted'] )   ?: '#64748b';
+		$gc_surface  = sanitize_hex_color( $profile['surface'] ) ?: '#f8fafc';
+		$gc_border   = sanitize_hex_color( $profile['border'] )  ?: '#e5e7eb';
+		$accent_dark = $this->darken_hex( $accent, 18 );
+		$accent_bg   = $this->hex_to_rgba( $accent, '0.06' );
+
+		// #region agent log
+		$_gleo_log = wp_json_encode( array(
+			'sessionId' => '8b85ea', 'hypothesisId' => 'FIX-verify',
+			'location'  => 'class-gleo-frontend.php:inject_page_wide_styles',
+			'message'   => 'page-wide styles output at priority 9999',
+			'data'      => array( 'accent' => $accent, 'gc_text' => $gc_text ),
+			'timestamp' => round( microtime( true ) * 1000 ),
+		) );
+		file_put_contents( '/tmp/gleo-debug-8b85ea.log', $_gleo_log . "\n", FILE_APPEND );
+		// #endregion
+		?>
+<style id="gleo-page-wide-styles">
+/* ── Gleo page-wide design polish (priority 9999 — after all theme CSS) ──────
+   !important used on color/bg declarations so they win regardless of theme specificity.
+   Layout/spacing rules use normal priority to avoid breaking theme structural CSS.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* Body & content text */
+body { color: <?php echo esc_attr( $gc_text ); ?> !important; }
+.entry-content,
+.wp-block-post-content,
+.post-content,
+.page-content,
+article.post,
+article.page { color: <?php echo esc_attr( $gc_text ); ?> !important; }
+
+/* Links */
+a { color: <?php echo esc_attr( $accent ); ?> !important; }
+a:hover,
+a:focus { color: <?php echo esc_attr( $accent_dark ); ?> !important; }
+
+/* Navigation links: don't force color (could look odd) — only entry content */
+.entry-content a,
+.wp-block-post-content a { color: <?php echo esc_attr( $accent ); ?> !important; }
+.entry-content a:hover,
+.wp-block-post-content a:hover { color: <?php echo esc_attr( $accent_dark ); ?> !important; }
+
+/* Headings */
+h1, h2, h3, h4, h5, h6 { color: <?php echo esc_attr( $gc_text ); ?> !important; }
+
+/* WP block buttons */
+.wp-block-button__link,
+.wp-block-button .wp-block-button__link {
+  background-color: <?php echo esc_attr( $accent ); ?> !important;
+  border-color:     <?php echo esc_attr( $accent ); ?> !important;
+  color:            #ffffff !important;
+}
+.wp-block-button__link:hover,
+.wp-block-button .wp-block-button__link:hover {
+  background-color: <?php echo esc_attr( $accent_dark ); ?> !important;
+  border-color:     <?php echo esc_attr( $accent_dark ); ?> !important;
+}
+.wp-block-button.is-style-outline .wp-block-button__link {
+  color:            <?php echo esc_attr( $accent ); ?> !important;
+  border-color:     <?php echo esc_attr( $accent ); ?> !important;
+  background-color: transparent !important;
+}
+
+/* Form submit */
+input[type="submit"],
+button[type="submit"],
+.wpcf7-submit {
+  background-color: <?php echo esc_attr( $accent ); ?> !important;
+  border-color:     <?php echo esc_attr( $accent ); ?> !important;
+  color:            #ffffff !important;
+}
+input[type="submit"]:hover,
+button[type="submit"]:hover {
+  background-color: <?php echo esc_attr( $accent_dark ); ?> !important;
+  border-color:     <?php echo esc_attr( $accent_dark ); ?> !important;
+}
+
+/* Blockquotes */
+blockquote,
+.wp-block-quote {
+  border-left-color:  <?php echo esc_attr( $accent ); ?> !important;
+  background-color:   <?php echo esc_attr( $gc_surface ); ?> !important;
+  color:              <?php echo esc_attr( $gc_muted ); ?> !important;
+}
+
+/* Separators */
+hr,
+.wp-block-separator { border-color: <?php echo esc_attr( $gc_border ); ?> !important; }
+
+/* Sidebar widget titles */
+.widget-title,
+.widgettitle {
+  color:              <?php echo esc_attr( $gc_text ); ?> !important;
+  border-bottom-color: <?php echo esc_attr( $accent ); ?> !important;
+}
+</style>
+		<?php
+	}
+
+	/**
+	 * Comprehensive visual preset CSS — transforms the full content area of any WP page.
+	 * Runs at priority 10000 (after theme and page-wide palette) and only when the profile
+	 * source is 'visual_enhancement', so it never interferes with palette-only edits.
+	 *
+	 * Each preset outputs a complete professional CSS layer scoped to .entry-content /
+	 * .wp-block-post-content. The preset choice is stored in the design profile as
+	 * 'layout_preset' ('clean' | 'editorial' | 'bold'). Colour tokens from the palette
+	 * (accent, text, muted, surface, border) are interpolated into the CSS so every preset
+	 * respects the AI-suggested or user-chosen colour scheme.
+	 */
+	public function inject_appearance_styles() {
+		if ( ! is_singular( array( 'post', 'page' ) ) ) return;
+
+		$post_id = get_the_ID();
+		$profile = self::get_design_profile( $post_id ? (int) $post_id : 0 );
+
+		if ( empty( $profile['enabled'] ) ) return;
+
+		// Only run the comprehensive UI layer when visual_enhancement applied it.
+		// Palette-only edits (source = 'user' | 'ai') are handled by inject_page_wide_styles().
+		$source = sanitize_text_field( $profile['source'] ?? '' );
+		if ( 'visual_enhancement' !== $source ) return;
+
+		$preset = sanitize_text_field( $profile['layout_preset'] ?? 'clean' );
+		if ( ! in_array( $preset, array( 'clean', 'editorial', 'bold' ), true ) ) {
+			$preset = 'clean';
+		}
+
+		echo '<style id="gleo-appearance-styles">' . "\n"
+			. $this->get_appearance_preset_css( $preset, $profile )
+			. "\n</style>\n";
+	}
+
+	/**
+	 * Generate a complete CSS layout preset for the content area.
+	 *
+	 * @param string $preset  'clean' | 'editorial' | 'bold'
+	 * @param array  $profile Design profile (for colour tokens).
+	 * @return string Safe CSS string ready for <style> output.
+	 */
+	private function get_appearance_preset_css( $preset, $profile ) {
+		// Colour tokens — fall back to tasteful defaults if palette not set
+		$accent  = sanitize_hex_color( $profile['accent']  ?? '' ) ?: '#3b82f6';
+		$gc_text = sanitize_hex_color( $profile['text']    ?? '' ) ?: '#0f172a';
+		$muted   = sanitize_hex_color( $profile['muted']   ?? '' ) ?: '#64748b';
+		$surface = sanitize_hex_color( $profile['surface'] ?? '' ) ?: '#f8fafc';
+		$border  = sanitize_hex_color( $profile['border']  ?? '' ) ?: '#e2e8f0';
+
+		$accent_dark = $this->darken_hex( $accent, 15 );
+
+		// ── Shared base CSS ──────────────────────────────────────────────────────
+		// Applied by every preset. Uses !important throughout to reliably override
+		// theme defaults without editing any theme files.
+		$base = <<<CSS
+/* ── Gleo Visual Enhancement — base ({$preset}) ── */
+
+/* 1. Content container */
+.entry-content, .wp-block-post-content, .post-content,
+article.post .entry-content, article.page .entry-content {
+  max-width: 720px !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+  font-size: 17px !important;
+  line-height: 1.78 !important;
+  color: {$gc_text} !important;
+}
+
+/* 2. Paragraphs */
+.entry-content p, .wp-block-post-content p, .post-content p {
+  margin-bottom: 1.3rem !important;
+  line-height: 1.78 !important;
+}
+
+/* 3. Lists */
+.entry-content ul, .wp-block-post-content ul,
+.entry-content ol, .wp-block-post-content ol {
+  padding-left: 1.75rem !important;
+  margin-bottom: 1.25rem !important;
+}
+.entry-content li, .wp-block-post-content li {
+  margin-bottom: 0.45rem !important;
+  line-height: 1.65 !important;
+}
+
+/* 4. Links (only bare links, not buttons or block controls) */
+.entry-content a:not([class*='wp-block']):not([class*='gleo']):not([class*='button']),
+.wp-block-post-content a:not([class*='wp-block']):not([class*='gleo']):not([class*='button']) {
+  color: {$accent} !important;
+  text-underline-offset: 3px;
+  transition: color 0.15s;
+}
+.entry-content a:not([class*='wp-block']):not([class*='gleo']):not([class*='button']):hover,
+.wp-block-post-content a:not([class*='wp-block']):not([class*='gleo']):not([class*='button']):hover {
+  color: {$accent_dark} !important;
+}
+
+/* 5. Images — polished presentation */
+.entry-content img:not([class*='emoji']):not([class*='avatar']):not([class*='logo']):not([class*='icon']),
+.wp-block-post-content img:not([class*='emoji']):not([class*='avatar']):not([class*='logo']):not([class*='icon']) {
+  border-radius: 10px !important;
+  box-shadow: 0 4px 20px rgba(0,0,0,0.10), 0 1px 4px rgba(0,0,0,0.06) !important;
+  display: block !important;
+  margin: 1.75rem auto !important;
+  max-width: 100% !important;
+  height: auto !important;
+}
+.entry-content .wp-block-image figure, .wp-block-post-content .wp-block-image figure {
+  margin: 1.75rem 0 !important;
+}
+.entry-content figcaption, .wp-block-post-content figcaption,
+.entry-content .wp-element-caption, .wp-block-post-content .wp-element-caption {
+  text-align: center !important;
+  font-size: 0.82em !important;
+  color: {$muted} !important;
+  margin-top: 0.5rem !important;
+  font-style: italic;
+}
+
+/* 6. Blockquotes */
+.entry-content blockquote, .wp-block-post-content blockquote,
+.entry-content .wp-block-quote, .wp-block-post-content .wp-block-quote {
+  border-left: 4px solid {$accent} !important;
+  margin: 1.75rem 0 !important;
+  padding: 1rem 1.5rem !important;
+  background: {$surface} !important;
+  border-radius: 0 8px 8px 0 !important;
+  font-style: italic;
+}
+.entry-content .wp-block-quote p, .wp-block-post-content .wp-block-quote p,
+.entry-content blockquote p, .wp-block-post-content blockquote p {
+  color: {$muted} !important;
+  margin-bottom: 0 !important;
+}
+
+/* 7. Tables */
+.entry-content table, .wp-block-post-content table {
+  width: 100% !important;
+  border-collapse: collapse !important;
+  font-size: 0.95em !important;
+  margin: 1.5rem 0 !important;
+}
+.entry-content th, .wp-block-post-content th {
+  background: {$surface} !important;
+  color: {$gc_text} !important;
+  font-weight: 600 !important;
+  padding: 0.7rem 1rem !important;
+  text-align: left !important;
+  border-bottom: 2px solid {$border} !important;
+}
+.entry-content td, .wp-block-post-content td {
+  padding: 0.65rem 1rem !important;
+  border-bottom: 1px solid {$border} !important;
+  vertical-align: top;
+}
+.entry-content tr:last-child td, .wp-block-post-content tr:last-child td {
+  border-bottom: none !important;
+}
+
+/* 8. Inline code */
+.entry-content code:not([class]), .wp-block-post-content code:not([class]) {
+  background: {$surface} !important;
+  border: 1px solid {$border} !important;
+  border-radius: 4px !important;
+  padding: 0.15em 0.4em !important;
+  font-size: 0.88em !important;
+}
+
+/* 9. Horizontal rules */
+.entry-content hr, .wp-block-post-content hr,
+.entry-content .wp-block-separator, .wp-block-post-content .wp-block-separator {
+  border: none !important;
+  border-top: 2px solid {$border} !important;
+  margin: 2.5rem auto !important;
+  max-width: 160px;
+  opacity: 1 !important;
+}
+CSS;
+
+		// ── Preset-specific heading & layout rules ───────────────────────────────
+		switch ( $preset ) {
+
+			case 'editorial':
+				$preset_css = <<<CSS
+
+/* ── Editorial: generous leading, large expressive type ── */
+.entry-content, .wp-block-post-content, .post-content {
+  max-width: 740px !important;
+  font-size: 18px !important;
+  line-height: 1.88 !important;
+}
+.entry-content h1, .wp-block-post-content h1 {
+  font-size: 2.6rem !important;
+  font-weight: 800 !important;
+  letter-spacing: -0.04em !important;
+  line-height: 1.1 !important;
+  margin-bottom: 1.5rem !important;
+}
+.entry-content h2, .wp-block-post-content h2 {
+  font-size: 1.75rem !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.025em !important;
+  line-height: 1.2 !important;
+  margin-top: 3rem !important;
+  margin-bottom: 1rem !important;
+  color: {$gc_text} !important;
+}
+.entry-content h3, .wp-block-post-content h3 {
+  font-size: 1.3rem !important;
+  font-weight: 600 !important;
+  margin-top: 2.25rem !important;
+  line-height: 1.35 !important;
+}
+.entry-content h4, .wp-block-post-content h4 {
+  font-size: 1.05rem !important;
+  font-weight: 600 !important;
+  color: {$muted} !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.06em !important;
+  font-size: 0.85rem !important;
+  margin-top: 1.5rem !important;
+}
+/* Lead paragraph */
+.entry-content > p:first-of-type, .wp-block-post-content > .wp-block-paragraph:first-of-type p,
+.entry-content > .wp-block-paragraph:first-of-type {
+  font-size: 1.2em !important;
+  line-height: 1.8 !important;
+  color: {$muted} !important;
+  font-weight: 400;
+}
+CSS;
+				break;
+
+			case 'bold':
+				$preset_css = <<<CSS
+
+/* ── Bold & Structured: high-contrast sections, strong hierarchy ── */
+.entry-content, .wp-block-post-content, .post-content {
+  max-width: 700px !important;
+  font-size: 16px !important;
+  line-height: 1.72 !important;
+}
+.entry-content h1, .wp-block-post-content h1 {
+  font-size: 2.4rem !important;
+  font-weight: 900 !important;
+  letter-spacing: -0.035em !important;
+  line-height: 1.08 !important;
+  margin-bottom: 1.25rem !important;
+}
+.entry-content h2, .wp-block-post-content h2 {
+  font-size: 1.45rem !important;
+  font-weight: 800 !important;
+  letter-spacing: -0.01em !important;
+  color: {$gc_text} !important;
+  margin-top: 2.5rem !important;
+  margin-bottom: 0.75rem !important;
+  padding: 0.8rem 1.1rem !important;
+  background: {$surface} !important;
+  border-left: 4px solid {$accent} !important;
+  border-radius: 0 6px 6px 0 !important;
+}
+.entry-content h3, .wp-block-post-content h3 {
+  font-size: 1.1rem !important;
+  font-weight: 700 !important;
+  text-transform: uppercase !important;
+  letter-spacing: 0.07em !important;
+  color: {$accent} !important;
+  margin-top: 1.75rem !important;
+}
+.entry-content h4, .wp-block-post-content h4 {
+  font-size: 1rem !important;
+  font-weight: 700 !important;
+  margin-top: 1.25rem !important;
+}
+CSS;
+				break;
+
+			default: // 'clean'
+				$preset_css = <<<CSS
+
+/* ── Clean & Modern: clear hierarchy, professional spacing ── */
+.entry-content h1, .wp-block-post-content h1 {
+  font-size: 2.25rem !important;
+  font-weight: 800 !important;
+  letter-spacing: -0.03em !important;
+  line-height: 1.15 !important;
+  margin-bottom: 1rem !important;
+}
+.entry-content h2, .wp-block-post-content h2 {
+  font-size: 1.6rem !important;
+  font-weight: 700 !important;
+  letter-spacing: -0.02em !important;
+  line-height: 1.3 !important;
+  margin-top: 2.5rem !important;
+  margin-bottom: 0.875rem !important;
+  padding-bottom: 0.5rem !important;
+  border-bottom: 2px solid {$border} !important;
+  color: {$gc_text} !important;
+}
+.entry-content h3, .wp-block-post-content h3 {
+  font-size: 1.2rem !important;
+  font-weight: 600 !important;
+  line-height: 1.4 !important;
+  margin-top: 1.75rem !important;
+  margin-bottom: 0.5rem !important;
+}
+.entry-content h4, .wp-block-post-content h4 {
+  font-size: 1.05rem !important;
+  font-weight: 600 !important;
+  color: {$muted} !important;
+}
+/* Subtle lead-in paragraph */
+.entry-content > p:first-of-type, .wp-block-post-content > .wp-block-paragraph:first-of-type {
+  font-size: 1.08em !important;
+  color: {$muted} !important;
+}
+CSS;
+		}
+
+		return $base . $preset_css;
 	}
 
 	public function register_routes() {
@@ -2840,9 +3181,16 @@ blockquote,
 				$modified = true;
 				break;
 
-			case 'data_tables':
-				// Comparison tables removed — return graceful no-op instead of error.
-				return new WP_Error( 'removed_fix', 'Comparison table generation has been removed.', array( 'status' => 400 ) );
+		case 'visual_enhancement':
+			// Trigger a full appearance analysis + open the modal on the frontend.
+			// The actual CSS/image changes go through /gleo/v1/appearance/apply;
+			// this case simply marks the type as "applied" so the report card updates.
+			// No post_content modification needed here.
+			break;
+
+		case 'data_tables':
+			// Comparison tables removed — return graceful no-op instead of error.
+			return new WP_Error( 'removed_fix', 'Comparison table generation has been removed.', array( 'status' => 400 ) );
 
 			case 'authority':
 				$content = $this->gleo_strip_stats_callout_blocks( $content );

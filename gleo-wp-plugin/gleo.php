@@ -131,15 +131,63 @@ function gleo_sanitize_design_profile_json( $value ) {
 
 	$color_keys = array( 'accent', 'text', 'muted', 'card', 'surface', 'border' );
 	$out = array(
-		'enabled'    => ! empty( $decoded['enabled'] ),
-		'page_wide'  => ! empty( $decoded['page_wide'] ),
-		'source'     => sanitize_text_field( (string) ( $decoded['source'] ?? 'user' ) ),
-		'updated_at' => sanitize_text_field( (string) ( $decoded['updated_at'] ?? '' ) ),
+		'enabled'       => ! empty( $decoded['enabled'] ),
+		'page_wide'     => ! empty( $decoded['page_wide'] ),
+		'source'        => sanitize_text_field( (string) ( $decoded['source'] ?? 'user' ) ),
+		'updated_at'    => sanitize_text_field( (string) ( $decoded['updated_at'] ?? '' ) ),
+		'layout_preset' => '',
 	);
+
+	$raw_preset = sanitize_text_field( (string) ( $decoded['layout_preset'] ?? '' ) );
+	if ( in_array( $raw_preset, array( 'clean', 'editorial', 'bold' ), true ) ) {
+		$out['layout_preset'] = $raw_preset;
+	}
 
 	foreach ( $color_keys as $key ) {
 		$raw = sanitize_hex_color( (string) ( $decoded[ $key ] ?? '' ) );
 		$out[ $key ] = $raw ?? '';
+	}
+
+	// Typography tokens (body_size, line_height, heading_weight)
+	if ( isset( $decoded['typography'] ) && is_array( $decoded['typography'] ) ) {
+		$safe_typo = array();
+		foreach ( array( 'body_size', 'line_height', 'heading_weight' ) as $tk ) {
+			$raw = sanitize_text_field( (string) ( $decoded['typography'][ $tk ] ?? '' ) );
+			if ( '' !== $raw && preg_match( '/^[\d\w\s.%-]+$/', $raw ) ) {
+				$safe_typo[ $tk ] = $raw;
+			}
+		}
+		if ( ! empty( $safe_typo ) ) {
+			$out['typography'] = $safe_typo;
+		}
+	}
+
+	// Spacing tokens (content_max_width, section_gap, image_margin)
+	if ( isset( $decoded['spacing'] ) && is_array( $decoded['spacing'] ) ) {
+		$safe_spacing = array();
+		foreach ( array( 'content_max_width', 'section_gap', 'image_margin' ) as $sk ) {
+			$raw = sanitize_text_field( (string) ( $decoded['spacing'][ $sk ] ?? '' ) );
+			if ( '' !== $raw && preg_match( '/^[\d\w\s.%-]+$/', $raw ) ) {
+				$safe_spacing[ $sk ] = $raw;
+			}
+		}
+		if ( ! empty( $safe_spacing ) ) {
+			$out['spacing'] = $safe_spacing;
+		}
+	}
+
+	// Image CSS tokens (border_radius, shadow)
+	if ( isset( $decoded['images'] ) && is_array( $decoded['images'] ) ) {
+		$safe_img = array();
+		foreach ( array( 'border_radius', 'shadow' ) as $ik ) {
+			$raw = sanitize_text_field( (string) ( $decoded['images'][ $ik ] ?? '' ) );
+			if ( '' !== $raw && preg_match( '/^[\d\w\s.,()%-]+$/', $raw ) ) {
+				$safe_img[ $ik ] = $raw;
+			}
+		}
+		if ( ! empty( $safe_img ) ) {
+			$out['images'] = $safe_img;
+		}
 	}
 
 	return wp_json_encode( $out );

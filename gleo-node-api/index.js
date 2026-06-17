@@ -5,6 +5,7 @@ const crypto = require('crypto');
 const clients = require('./config/clients');
 const { analyzePost } = require('./lib/geo-analyzer');
 const { runVisionCritique } = require('./lib/vision-critique');
+const { runAppearanceAnalysis } = require('./lib/appearance-enhancer');
 const analyticsRoutes = require('./routes/analytics');
 const { initSOVCron } = require('./lib/sov-simulator');
 
@@ -113,6 +114,20 @@ app.post('/v1/optimize/critique', verifySignature, async (req, res) => {
     return res.json({ status: 'ok', data: result });
   } catch (err) {
     console.error('[Vision] Critique error:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/v1/optimize/appearance', verifySignature, async (req, res) => {
+  const { page_url, post_title, image_count } = req.body || {};
+  if (!page_url) {
+    return res.status(400).json({ error: 'Missing page_url' });
+  }
+  try {
+    const result = await runAppearanceAnalysis({ page_url, post_title, image_count });
+    return res.json({ status: 'ok', data: result });
+  } catch (err) {
+    console.error('[Appearance] Analysis error:', err.message);
     return res.status(500).json({ error: err.message });
   }
 });

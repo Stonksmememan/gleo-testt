@@ -67,10 +67,20 @@ Goals:
 
 ${captureError ? `Screenshot unavailable (${captureError}). Base your review on URL/title only and be conservative.` : 'A screenshot of the live page is attached.'}
 
-Also evaluate the visual design of Gleo-injected content blocks (FAQ accordions, stats callouts, expert quotes). These are card/accordion-style blocks that may clash with the site's color scheme.
-- Focus design feedback ONLY on these injected blocks, not the full site redesign.
-- Suggest a cohesive hex color palette for these blocks that harmonizes with the existing site branding.
-- Do NOT recommend changing logos, fonts, or page builder layouts.
+Evaluate TWO things:
+
+1. CONTENT QUALITY: Check if Gleo-injected blocks (FAQ accordions, stats callouts, expert quotes) fit the page. Flag any that look out of place or "AI slop"-like.
+
+2. FULL PAGE VISUAL QUALITY: Look at the overall page appearance — not just the injected blocks. Consider:
+   - Are there enough images, or is it a wall of text?
+   - Is the typography readable and appropriately sized?
+   - Does the spacing feel comfortable or cramped?
+   - Do colors look cohesive and professional?
+   Set recommend_design_polish=true if the full page visual experience is poor (score < 7).
+   Set visual_score to reflect the WHOLE page appearance (1=terrible, 10=excellent).
+
+For suggested_palette: suggest colors that harmonize with the EXISTING site branding.
+Do NOT recommend changing logos, fonts, or page builder layouts.
 
 Return strict JSON with these fields.`;
 
