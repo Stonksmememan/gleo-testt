@@ -44,6 +44,8 @@ class Gleo_Frontend {
 		// Redistribute those inner blocks across left / center / right (parse_blocks) so the row isn’t empty on the sides.
 		add_filter( 'the_content', array( $this, 'filter_rebalance_three_column_rows' ), 8 );
 		add_filter( 'the_content', array( $this, 'strip_legacy_visible_ai_overview' ), 7 );
+		// Append Gleo blocks stored in post meta for pages built with visual builders (priority 98 = before ai-only markup at 99).
+		add_filter( 'the_content', array( $this, 'append_builder_blocks' ), 98 );
 		add_filter( 'the_content', array( $this, 'append_ai_only_overview_markup' ), 99 );
 		add_filter( 'wp_insert_post_data', array( $this, 'filter_insert_post_rebalance_columns' ), 99, 2 );
 	}
@@ -1857,6 +1859,96 @@ CSS;
 		return preg_replace( '/\n?<!-- wp:html -->[\s\S]*?gleo-faq-wrap[\s\S]*?<!-- \/wp:html -->\s*/i', "\n", (string) $content );
 	}
 
+	/**
+	 * Detect which page builder (if any) owns a post's content.
+	 * Checks post meta first (authoritative at apply time), then falls back
+	 * to the scan layout_map and finally a content regex.
+	 *
+	 * @param int        $post_id    Post ID.
+	 * @param string     $content    Raw post_content.
+	 * @param array|null $layout_map Stored layout_map from scan result.
+	 * @return array { builder_name: string, content_edit_safe: bool }
+	 */
+	private function gleo_detect_page_builder( $post_id, $content, $layout_map ) {
+		$builder_name = '';
+
+		// Post meta is the most reliable signal (set by the builder itself).
+		if ( get_post_meta( $post_id, '_elementor_edit_mode', true ) || get_post_meta( $post_id, '_elementor_data', true ) ) {
+			$builder_name = 'elementor';
+		} elseif ( get_post_meta( $post_id, '_et_pb_use_builder', true ) || get_post_meta( $post_id, '_et_pb_old_content', true ) ) {
+			$builder_name = 'divi';
+		} elseif ( get_post_meta( $post_id, '_wpb_vc_js_status', true ) || ( is_string( $content ) && strpos( $content, '[vc_row' ) !== false ) ) {
+			$builder_name = 'wpbakery';
+		} elseif ( get_post_meta( $post_id, '_fl_builder_enabled', true ) || get_post_meta( $post_id, '_fl_builder_data', true ) ) {
+			$builder_name = 'beaver';
+		}
+
+		// Fall back to what the scan detected from rendered HTML.
+		if ( '' === $builder_name && is_array( $layout_map ) && ! empty( $layout_map['builder_detected'] ) ) {
+			$builder_name = (string) $layout_map['builder_detected'];
+		}
+
+		// Last resort: regex on raw post_content.
+		if ( '' === $builder_name && preg_match( '/elementor|et_pb_|vc_row|fl-builder|wpb_wrapper/i', (string) $content ) ) {
+			$builder_name = 'page_builder';
+		}
+
+		return array(
+			'builder_name'      => $builder_name,
+			'content_edit_safe' => '' === $builder_name,
+		);
+	}
+
+	/**
+	 * Store a Gleo-generated block in post meta so it can be appended via the_content
+	 * without touching builder shortcodes or Elementor JSON in post_content.
+	 *
+	 * @param int    $post_id Post ID.
+	 * @param string $type    Fix type key (e.g. 'faq', 'content_depth').
+	 * @param string $block_html HTML to append.
+	 */
+	private function gleo_store_builder_block( $post_id, $type, $block_html ) {
+		$blocks = get_post_meta( $post_id, '_gleo_builder_blocks', true );
+		if ( ! is_array( $blocks ) ) {
+			$blocks = array();
+		}
+		$blocks[ sanitize_key( $type ) ] = $block_html;
+		update_post_meta( $post_id, '_gleo_builder_blocks', $blocks );
+	}
+
+	/**
+	 * Append Gleo blocks stored in _gleo_builder_blocks post meta to the rendered content.
+	 * This is the safe delivery channel for pages using visual page builders.
+	 *
+	 * @param string $content Rendered post content.
+	 * @return string
+	 */
+	public function append_builder_blocks( $content ) {
+		if ( is_admin() || ! is_singular( array( 'post', 'page' ) ) || ! in_the_loop() || ! is_main_query() ) {
+			return $content;
+		}
+		$post_id = get_the_ID();
+		$blocks  = get_post_meta( $post_id, '_gleo_builder_blocks', true );
+		if ( ! is_array( $blocks ) || empty( $blocks ) ) {
+			return $content;
+		}
+		// Render in stable order: FAQ first, then depth, then social proof blocks.
+		$order  = array( 'faq', 'answer_readiness', 'content_depth', 'expert_quotes', 'authority', 'credibility' );
+		$append = '';
+		foreach ( $order as $key ) {
+			if ( isset( $blocks[ $key ] ) && is_string( $blocks[ $key ] ) && '' !== trim( $blocks[ $key ] ) ) {
+				$append .= "\n" . $blocks[ $key ];
+			}
+		}
+		// Any remaining blocks not in the explicit order list.
+		foreach ( $blocks as $key => $html ) {
+			if ( ! in_array( $key, $order, true ) && is_string( $html ) && '' !== trim( $html ) ) {
+				$append .= "\n" . $html;
+			}
+		}
+		return $content . $append;
+	}
+
 	private function gleo_placement_is_unsafe( $content, $layout_map ) {
 		if ( is_array( $layout_map ) && ( $layout_map['confidence'] ?? '' ) === 'low' ) {
 			return true;
@@ -2201,6 +2293,8 @@ CSS;
 
 	/**
 	 * FAQ pairs using questions people commonly ask (price, booking, expectations).
+	 * When a healthcare practice profile is set, patient-specific questions are added
+	 * and ranked higher.
 	 *
 	 * @param WP_Post $post Post.
 	 * @return array<int, array{q: string, a: string}>
@@ -2210,6 +2304,10 @@ CSS;
 		$haystack  = strtolower( wp_strip_all_tags( $post->post_title . ' ' . $post->post_content ) );
 		$fragments = $this->gleo_content_fragments( $post );
 		$excerpt   = ! empty( $fragments[0] ) ? wp_trim_words( $fragments[0], 55, '' ) : wp_trim_words( wp_strip_all_tags( $post->post_content ), 55, '' );
+
+		$profile       = class_exists( 'Gleo_Practice_Profile' ) ? Gleo_Practice_Profile::get() : array();
+		$practice_type = isset( $profile['practice_type'] ) ? strtolower( $profile['practice_type'] ) : '';
+		$is_healthcare = in_array( $practice_type, array( 'dentist', 'physician', 'medical_clinic' ), true );
 
 		$candidates = array(
 			array(
@@ -2234,18 +2332,13 @@ CSS;
 			),
 			array(
 				'q'     => sprintf( __( 'Is %s right for me?', 'gleo' ), $topic ),
-				'a'     => $this->gleo_faq_answer_from_content( $post, array( 'ideal', 'best for', 'if you', 'customers', 'clients' ), $excerpt ),
+				'a'     => $this->gleo_faq_answer_from_content( $post, array( 'ideal', 'best for', 'if you', 'candidates', 'patients' ), $excerpt ),
 				'score' => 4,
 			),
 			array(
 				'q'     => sprintf( __( "What's included with %s?", 'gleo' ), $topic ),
 				'a'     => $this->gleo_faq_answer_from_content( $post, array( 'include', 'included', 'comes with', 'covers', 'package' ), $excerpt ),
 				'score' => 3 + $this->gleo_faq_keyword_score( $haystack, array( 'include', 'package', 'covers' ) ),
-			),
-			array(
-				'q'     => sprintf( __( 'Do you offer free estimates for %s?', 'gleo' ), $topic ),
-				'a'     => $this->gleo_faq_answer_from_content( $post, array( 'consult', 'consultation', 'free', 'quote', 'estimate' ), $excerpt ),
-				'score' => 3 + $this->gleo_faq_keyword_score( $haystack, array( 'consult', 'quote', 'estimate', 'free' ) ),
 			),
 			array(
 				'q'     => sprintf( __( 'Where do you provide %s?', 'gleo' ), $topic ),
@@ -2258,6 +2351,66 @@ CSS;
 				'score' => 2 + $this->gleo_faq_keyword_score( $haystack, array( 'same day', 'emergency', 'urgent', 'today' ) ),
 			),
 		);
+
+		// Healthcare-specific questions ranked higher than generic small-business ones.
+		if ( $is_healthcare ) {
+			$healthcare_candidates = array(
+				array(
+					'q'     => sprintf( __( 'Do you accept insurance for %s?', 'gleo' ), $topic ),
+					'a'     => $this->gleo_faq_answer_from_content( $post, array( 'insurance', 'in-network', 'coverage', 'plan', 'accepts' ), sprintf( __( 'Contact our office to confirm which insurance plans we accept for %s — our team can verify your coverage before your visit.', 'gleo' ), $topic ) ),
+					'score' => 8 + $this->gleo_faq_keyword_score( $haystack, array( 'insurance', 'coverage', 'in-network', 'accepts' ) ),
+				),
+				array(
+					'q'     => sprintf( __( 'Does %s hurt?', 'gleo' ), $topic ),
+					'a'     => $this->gleo_faq_answer_from_content( $post, array( 'pain', 'discomfort', 'anesthesia', 'numb', 'gentle', 'comfortable' ), $excerpt ),
+					'score' => 7 + $this->gleo_faq_keyword_score( $haystack, array( 'pain', 'hurt', 'discomfort', 'comfortable', 'anesthesia' ) ),
+				),
+				array(
+					'q'     => sprintf( __( 'How long is recovery after %s?', 'gleo' ), $topic ),
+					'a'     => $this->gleo_faq_answer_from_content( $post, array( 'recover', 'recovery', 'heal', 'downtime', 'return to work', 'rest' ), $excerpt ),
+					'score' => 7 + $this->gleo_faq_keyword_score( $haystack, array( 'recovery', 'heal', 'downtime', 'rest', 'return' ) ),
+				),
+				array(
+					'q'     => sprintf( __( 'Am I a candidate for %s?', 'gleo' ), $topic ),
+					'a'     => $this->gleo_faq_answer_from_content( $post, array( 'candidate', 'suitable', 'eligible', 'good fit', 'ideal patient', 'qualify' ), $excerpt ),
+					'score' => 6 + $this->gleo_faq_keyword_score( $haystack, array( 'candidate', 'eligible', 'qualify', 'suitable' ) ),
+				),
+			);
+
+			// Merge patient-specific target_queries as additional candidates.
+			$target_queries = isset( $profile['target_queries'] ) ? (array) $profile['target_queries'] : array();
+			foreach ( array_slice( $target_queries, 0, 5 ) as $tq ) {
+				$tq = trim( (string) $tq );
+				if ( '' === $tq ) {
+					continue;
+				}
+				// Only add as a candidate when it's question-shaped and relates to the post.
+				if ( ! preg_match( '/\?\s*$/', $tq ) ) {
+					$tq .= '?';
+				}
+				$tq_lower = strtolower( $tq );
+				$topic_words = array_filter( array_map( 'trim', explode( ' ', strtolower( $topic ) ) ) );
+				$topic_match = array_filter( $topic_words, static function( $w ) use ( $tq_lower ) {
+					return strlen( $w ) > 3 && str_contains( $tq_lower, $w );
+				} );
+				if ( ! empty( $topic_match ) || $this->gleo_faq_keyword_score( $haystack, $topic_words ) > 0 ) {
+					$healthcare_candidates[] = array(
+						'q'     => $tq,
+						'a'     => $this->gleo_faq_answer_from_content( $post, $topic_words, $excerpt ),
+						'score' => 5,
+					);
+				}
+			}
+
+			$candidates = array_merge( $healthcare_candidates, $candidates );
+		} else {
+			// Non-healthcare: keep the generic "free estimates" question.
+			$candidates[] = array(
+				'q'     => sprintf( __( 'Do you offer free estimates for %s?', 'gleo' ), $topic ),
+				'a'     => $this->gleo_faq_answer_from_content( $post, array( 'consult', 'consultation', 'free', 'quote', 'estimate' ), $excerpt ),
+				'score' => 3 + $this->gleo_faq_keyword_score( $haystack, array( 'consult', 'quote', 'estimate', 'free' ) ),
+			);
+		}
 
 		usort(
 			$candidates,
@@ -2305,12 +2458,12 @@ CSS;
 			if ( $this->gleo_heading_is_banned( $q ) ) {
 				continue;
 			}
-			// Reject textbook / academic phrasing that real customers never search.
-			if ( preg_match( '/\b(overview|landscape|paradigm|synergy|leverage|delve|realm|operational\s+framework|how\s+\S+\s+works|what\s+is\s+the\s+role|key\s+facts|basics\s+of|in\s+practice)\b/i', $q ) ) {
+		// Reject textbook / academic / clinical phrasing that real patients never search.
+		if ( preg_match( '/\b(overview|landscape|paradigm|synergy|leverage|delve|realm|operational\s+framework|how\s+\S+\s+works|what\s+is\s+the\s+role|key\s+facts|basics\s+of|in\s+practice|mechanism\s+of|pathophysiology|etiology|contraindication|epidemiology|efficacy|clinical\s+significance)\b/i', $q ) ) {
 				continue;
 			}
-			// Accept clear customer-search patterns first.
-			if ( preg_match( '/\b(how much|how long|how do|what should|is .+ right|where is|do you|can i|what do i need|what\'s included|same.?day|free estimate|free quote)\b/i', $q ) ) {
+			// Accept clear patient/customer-search patterns first.
+			if ( preg_match( '/\b(how much|how long|how do|what should|is .+ right|where is|do you|can i|what do i need|what\'s included|same.?day|free estimate|free quote|does it hurt|is it painful|accept insurance|am i a candidate|recovery after)\b/i', $q ) ) {
 				$good[] = $pair;
 				continue;
 			}
@@ -2325,6 +2478,7 @@ CSS;
 
 	/**
 	 * Recompute GEO score (0–100) from content signals — mirrors gleo-node-api scoring.
+	 * Healthcare practices (dentist/physician/medical_clinic) use patient-intent weights.
 	 *
 	 * @param array $signals Content signals.
 	 * @param int   $brand_rate Brand inclusion 0–10.
@@ -2334,8 +2488,14 @@ CSS;
 		if ( ! is_array( $signals ) ) {
 			return 0;
 		}
+
+		$profile       = class_exists( 'Gleo_Practice_Profile' ) ? Gleo_Practice_Profile::get() : array();
+		$practice_type = isset( $profile['practice_type'] ) ? strtolower( $profile['practice_type'] ) : '';
+		$healthcare    = in_array( $practice_type, array( 'dentist', 'physician', 'medical_clinic' ), true );
+
 		$score = 0;
 
+		// ── 1. Technical Crawlability (max 15) — same for all sites ──
 		$alt_cov = isset( $signals['alt_text_coverage'] ) ? (int) $signals['alt_text_coverage'] : 0;
 		$img_cnt = isset( $signals['image_count'] ) ? (int) $signals['image_count'] : 0;
 		if ( $alt_cov >= 90 ) {
@@ -2351,98 +2511,98 @@ CSS;
 		if ( ! empty( $signals['has_llms_txt'] ) ) {
 			$score += 5;
 		}
-		// Pillar 2: Structured Data & Schema (max 20) — mirrors geo-analyzer.js
-		$pillar2 = 0;
-		if ( ! empty( $signals['has_schema'] ) ) {
-			$pillar2 += 10;
-		}
-		if ( ! empty( $signals['has_faq_schema'] ) ) {
-			$pillar2 += 5;
-		}
-		if ( ! empty( $signals['has_org_schema'] ) ) {
-			$pillar2 += 5;
-		}
-		// Practice profile detection signals (Phase 2)
-		if ( ! empty( $signals['has_nap_signals'] ) ) {
-			$pillar2 += 3;
-		}
-		if ( ! empty( $signals['has_hours_signals'] ) ) {
-			$pillar2 += 2;
-		}
-		if ( ! empty( $signals['has_booking_link'] ) ) {
-			$pillar2 += 2;
-		}
-		$score += min( 20, $pillar2 );
 
-		$wc = isset( $signals['word_count'] ) ? (int) $signals['word_count'] : 0;
-		if ( $wc >= 2000 ) {
-			$score += 10;
-		} elseif ( $wc >= 1200 ) {
-			$score += 7;
-		} elseif ( $wc >= 600 ) {
-			$score += 4;
-		} elseif ( $wc > 0 ) {
-			$score += 1;
-		}
-		if ( ! empty( $signals['has_direct_answer'] ) ) {
-			$score += 5;
-		}
-		if ( ! empty( $signals['has_tldr'] ) ) {
-			$score += 5;
-		}
-		if ( ! empty( $signals['has_conversational_queries'] ) ) {
-			$score += 3;
-		}
-		if ( ! empty( $signals['has_direct_answers'] ) ) {
-			$score += 2;
-		}
-		if ( $wc >= 800 && ! empty( $signals['has_statistics'] ) ) {
-			$score += 3;
-		}
-		if ( ! empty( $signals['has_quotes'] ) ) {
-			$score += 2;
-		}
-
-		$stat_count = isset( $signals['stat_count'] ) ? (int) $signals['stat_count'] : 0;
-		if ( $stat_count >= 3 ) {
-			$score += 5;
-		} elseif ( $stat_count >= 1 ) {
-			$score += 3;
-		}
-		$cite = isset( $signals['citation_count'] ) ? (int) $signals['citation_count'] : 0;
-		if ( $cite >= 3 ) {
-			$score += 5;
-		} elseif ( $cite >= 1 ) {
-			$score += 3;
-		}
-		if ( ! empty( $signals['has_quotes'] ) ) {
-			$score += 5;
-		}
-
-		$hc = isset( $signals['heading_count'] ) ? (int) $signals['heading_count'] : 0;
-		if ( $hc >= 4 ) {
-			$score += 5;
-		} elseif ( $hc >= 2 ) {
-			$score += 3;
-		} elseif ( ! empty( $signals['has_headings'] ) ) {
-			$score += 1;
-		}
+		$wc     = isset( $signals['word_count'] ) ? (int) $signals['word_count'] : 0;
+		$stat_c = isset( $signals['stat_count'] ) ? (int) $signals['stat_count'] : 0;
+		$cite   = isset( $signals['citation_count'] ) ? (int) $signals['citation_count'] : 0;
+		$hc     = isset( $signals['heading_count'] ) ? (int) $signals['heading_count'] : 0;
 		$long_p = isset( $signals['long_paragraphs'] ) ? (int) $signals['long_paragraphs'] : 0;
 		$para_c = isset( $signals['paragraph_count'] ) ? (int) $signals['paragraph_count'] : 0;
-		if ( 0 === $long_p && $para_c > 0 ) {
-			$score += 5;
-		} elseif ( $long_p <= 2 ) {
-			$score += 3;
-		}
 		$list_c = isset( $signals['list_item_count'] ) ? (int) $signals['list_item_count'] : 0;
-		if ( $list_c >= 3 ) {
-			$score += 4;
-		} elseif ( ! empty( $signals['has_lists'] ) ) {
-			$score += 2;
-		}
-		// FAQ block: 6 pts (redistributed from removed table check — mirrors gleo-node-api scoring).
-		if ( ! empty( $signals['has_faq'] ) ) {
-			$score += 6;
+
+		if ( $healthcare ) {
+			// ── 2. Structured Data & Schema — healthcare (max 25) ──
+			$pillar2 = 0;
+			if ( ! empty( $signals['has_schema'] ) )              { $pillar2 += 8; }
+			if ( ! empty( $signals['has_faq_schema'] ) )          { $pillar2 += 7; }
+			if ( ! empty( $signals['has_org_schema'] ) )          { $pillar2 += 4; }
+			if ( ! empty( $signals['has_healthcare_schema'] ) )   { $pillar2 += 4; }
+			if ( ! empty( $signals['has_nap_signals'] ) )         { $pillar2 += 3; }
+			if ( ! empty( $signals['has_hours_signals'] ) )       { $pillar2 += 2; }
+			if ( ! empty( $signals['has_booking_link'] ) )        { $pillar2 += 2; }
+			if ( ! empty( $signals['has_insurance_signals'] ) )   { $pillar2 += 3; }
+			if ( ! empty( $signals['has_credentials_signals'] ) ) { $pillar2 += 3; }
+			$score += min( 25, $pillar2 );
+
+			// ── 3. Content Quality — healthcare (max 25) ──
+			if ( $wc >= 800 )      { $score += 5; }
+			elseif ( $wc >= 400 )  { $score += 3; }
+			elseif ( $wc > 0 )     { $score += 1; }
+
+			if ( ! empty( $signals['has_direct_answer'] ) )         { $score += 5; }
+			if ( ! empty( $signals['has_tldr'] ) )                  { $score += 5; }
+			if ( ! empty( $signals['has_conversational_queries'] ) ) { $score += 3; }
+			if ( ! empty( $signals['has_direct_answers'] ) )        { $score += 2; }
+			if ( ! empty( $signals['has_local_intent_signals'] ) )  { $score += 3; }
+			if ( ! empty( $signals['has_faq'] ) )                   { $score += 2; }
+
+			// ── 4. Credibility — healthcare (max 15) ──
+			if ( $stat_c >= 3 )      { $score += 3; }
+			elseif ( $stat_c >= 1 )  { $score += 2; }
+			if ( $cite >= 3 )        { $score += 5; }
+			elseif ( $cite >= 1 )    { $score += 3; }
+			if ( ! empty( $signals['has_quotes'] ) )     { $score += 5; }
+			if ( ! empty( $signals['has_disclaimer'] ) ) { $score += 2; }
+
+			// ── 5. AI-Specific Formatting — healthcare (max 20; FAQ worth 8) ──
+			if ( $hc >= 4 )                                           { $score += 5; }
+			elseif ( $hc >= 2 )                                       { $score += 3; }
+			elseif ( ! empty( $signals['has_headings'] ) )            { $score += 1; }
+			if ( 0 === $long_p && $para_c > 0 )                       { $score += 5; }
+			elseif ( $long_p <= 2 )                                   { $score += 3; }
+			if ( $list_c >= 3 )                                       { $score += 4; }
+			elseif ( ! empty( $signals['has_lists'] ) )               { $score += 2; }
+			if ( ! empty( $signals['has_faq'] ) )                     { $score += 8; }
+		} else {
+			// ── 2. Structured Data & Schema — standard (max 20) ──
+			$pillar2 = 0;
+			if ( ! empty( $signals['has_schema'] ) )    { $pillar2 += 10; }
+			if ( ! empty( $signals['has_faq_schema'] ) ) { $pillar2 += 5; }
+			if ( ! empty( $signals['has_org_schema'] ) ) { $pillar2 += 5; }
+			if ( ! empty( $signals['has_nap_signals'] ) )   { $pillar2 += 3; }
+			if ( ! empty( $signals['has_hours_signals'] ) ) { $pillar2 += 2; }
+			if ( ! empty( $signals['has_booking_link'] ) )  { $pillar2 += 2; }
+			$score += min( 20, $pillar2 );
+
+			// ── 3. Content Quality — standard (max 30) ──
+			if ( $wc >= 2000 )      { $score += 10; }
+			elseif ( $wc >= 1200 )  { $score += 7; }
+			elseif ( $wc >= 600 )   { $score += 4; }
+			elseif ( $wc > 0 )      { $score += 1; }
+
+			if ( ! empty( $signals['has_direct_answer'] ) )         { $score += 5; }
+			if ( ! empty( $signals['has_tldr'] ) )                  { $score += 5; }
+			if ( ! empty( $signals['has_conversational_queries'] ) ) { $score += 3; }
+			if ( ! empty( $signals['has_direct_answers'] ) )        { $score += 2; }
+			if ( $wc >= 800 && ! empty( $signals['has_statistics'] ) ) { $score += 3; }
+			if ( ! empty( $signals['has_quotes'] ) )                { $score += 2; }
+
+			// ── 4. Credibility — standard (max 15) ──
+			if ( $stat_c >= 3 )      { $score += 5; }
+			elseif ( $stat_c >= 1 )  { $score += 3; }
+			if ( $cite >= 3 )        { $score += 5; }
+			elseif ( $cite >= 1 )    { $score += 3; }
+			if ( ! empty( $signals['has_quotes'] ) ) { $score += 5; }
+
+			// ── 5. AI-Specific Formatting — standard (max 20; FAQ worth 6) ──
+			if ( $hc >= 4 )                                { $score += 5; }
+			elseif ( $hc >= 2 )                            { $score += 3; }
+			elseif ( ! empty( $signals['has_headings'] ) ) { $score += 1; }
+			if ( 0 === $long_p && $para_c > 0 )            { $score += 5; }
+			elseif ( $long_p <= 2 )                        { $score += 3; }
+			if ( $list_c >= 3 )                            { $score += 4; }
+			elseif ( ! empty( $signals['has_lists'] ) )    { $score += 2; }
+			if ( ! empty( $signals['has_faq'] ) )          { $score += 6; }
 		}
 
 		return min( 100, $score );
@@ -2480,11 +2640,12 @@ CSS;
 			case 'readability':
 				$cs['long_paragraphs'] = 0;
 				break;
-			case 'faq':
-			case 'answer_readiness':
-				$cs['has_faq']            = true;
-				$cs['has_direct_answers'] = true;
-				break;
+		case 'faq':
+		case 'answer_readiness':
+			$cs['has_faq']            = true;
+			$cs['has_direct_answers'] = true;
+			$cs['has_disclaimer']     = true;
+			break;
 			// data_tables removed — comparison tables are no longer generated
 			case 'content_depth':
 				$cs['word_count'] = max( (int) ( $cs['word_count'] ?? 0 ), 1200 );
@@ -2974,6 +3135,76 @@ CSS;
 		$faq_pairs_for_schema       = array();
 		$geo_score_out   = null;
 
+		// ── Phase 4: Page Builder Safety ─────────────────────────────────────────
+		// Tier A (meta/head): always apply normally — no post_content involved.
+		// Tier B (append blocks): store in meta, render via the_content filter.
+		// Tier C (in-place edits): block mutation; return suggestion payload.
+		static $GLEO_FIX_TIER_A = array( 'schema', 'schema_enrich', 'opening_summary', 'robots_txt_allow', 'image_alt_text', 'visual_enhancement', 'structure' );
+		static $GLEO_FIX_TIER_B = array( 'faq', 'answer_readiness', 'content_depth', 'expert_quotes', 'authority', 'credibility' );
+		static $GLEO_FIX_TIER_C = array( 'formatting', 'readability' );
+
+		$builder        = $this->gleo_detect_page_builder( $post_id, $content, $layout_map );
+		$builder_active = ! $builder['content_edit_safe'];
+
+		if ( $builder_active ) {
+			if ( in_array( $type, $GLEO_FIX_TIER_C, true ) ) {
+				// Generate the suggestion HTML so the UI can offer a copy-paste option.
+				$suggestion_html = '';
+				if ( 'formatting' === $type ) {
+					// Show first dense paragraph as a suggested bulleted list.
+					if ( preg_match( '/<p>([^<]{200,})<\/p>/i', $content, $pm ) ) {
+						$sentences = preg_split( '/(?<=[.!?])\s+/', trim( $pm[1] ) );
+						if ( count( $sentences ) >= 2 ) {
+							$items = '';
+							foreach ( $sentences as $s ) {
+								$s = trim( $s );
+								if ( strlen( $s ) > 5 ) {
+									$items .= '<li>' . esc_html( $s ) . '</li>';
+								}
+							}
+							$suggestion_html = '<ul>' . $items . '</ul>';
+						}
+					}
+				} elseif ( 'readability' === $type ) {
+					// Show first long paragraph split as a suggestion.
+					if ( preg_match( '/<p>(.*?)<\/p>/is', $content, $pm ) ) {
+						$words = preg_split( '/\s+/', trim( $pm[1] ) );
+						if ( count( $words ) > 80 ) {
+							$mid   = (int) ceil( count( $words ) / 2 );
+							$first = implode( ' ', array_slice( $words, 0, $mid ) );
+							$second = implode( ' ', array_slice( $words, $mid ) );
+							$suggestion_html = '<p>' . esc_html( $first ) . '</p><p>' . esc_html( $second ) . '</p>';
+						}
+					}
+				}
+				return new WP_Error(
+					'builder_suggestion',
+					sprintf(
+						/* translators: 1: fix type, 2: builder name */
+						__( '%1$s skipped — page built with %2$s. Copy the suggested markup below into your builder.', 'gleo' ),
+						$type,
+						$builder['builder_name']
+					),
+					array(
+						'status'          => 409,
+						'code'            => 'builder_suggestion',
+						'fix_type'        => $type,
+						'builder_name'    => $builder['builder_name'],
+						'suggestion_html' => $suggestion_html,
+					)
+				);
+			}
+
+			if ( in_array( $type, $GLEO_FIX_TIER_B, true ) ) {
+				// Tier B: skip post_content mutation; block HTML will be built below
+				// and stored in meta via gleo_store_builder_block() at end of each case.
+				// Set a flag so each case knows to use the meta path.
+				$use_builder_meta = true;
+			}
+		}
+		$use_builder_meta = $use_builder_meta ?? false;
+		// ── End builder safety gate ───────────────────────────────────────────────
+
 		switch ( $type ) {
 
 			case 'schema':
@@ -3027,9 +3258,13 @@ CSS;
 				$fig  = '<figure class="gleo-expert-quote"><blockquote class="gleo-expert-quote__text"><p>' . esc_html( $quote ) . '</p></blockquote>';
 				$fig .= '<figcaption class="gleo-expert-quote__cite">' . esc_html__( 'Note', 'gleo' ) . '</figcaption></figure>';
 				$blk  = "<!-- wp:html -->\n{$fig}\n<!-- /wp:html -->";
-				$pos  = max( 2, (int) floor( (int) preg_match_all( '/<\/p>/i', $content ) / 3 ) );
-				$content = $this->inject_after_paragraph( $content, $blk, $pos );
-				$modified = true;
+				if ( $use_builder_meta ) {
+					$this->gleo_store_builder_block( $post_id, 'expert_quotes', $blk );
+				} else {
+					$pos     = max( 2, (int) floor( (int) preg_match_all( '/<\/p>/i', $content ) / 3 ) );
+					$content = $this->inject_after_paragraph( $content, $blk, $pos );
+					$modified = true;
+				}
 				break;
 
 		case 'structure':
@@ -3146,10 +3381,22 @@ CSS;
 						. '<div class="gleo-faq-a"><p>' . $a . '</p></div>'
 						. '</div>';
 				}
-				$faq_pairs_for_schema = array_slice( $pairs, 0, 5 );
-				$faq_title = __( 'Frequently Asked Questions', 'gleo' );
-				$faq_inner = '<div class="gleo-faq-wrap"><h2 class="wp-block-heading">' . esc_html( $faq_title ) . '</h2>'
-					. '<div class="gleo-faq-accordion">' . $items_html . '</div></div>';
+			$faq_pairs_for_schema = array_slice( $pairs, 0, 5 );
+			$faq_title = __( 'Frequently Asked Questions', 'gleo' );
+
+			// Healthcare disclaimer — appended inside the FAQ block for YMYL safety.
+			$disclaimer_html = '';
+			$hc_profile       = class_exists( 'Gleo_Practice_Profile' ) ? Gleo_Practice_Profile::get() : array();
+			$hc_type          = isset( $hc_profile['practice_type'] ) ? strtolower( $hc_profile['practice_type'] ) : '';
+			if ( in_array( $hc_type, array( 'dentist', 'physician', 'medical_clinic' ), true ) ) {
+				$disclaimer_html = '<p class="gleo-faq-disclaimer" style="font-size:0.85em;color:#555;margin-top:12px;">'
+					. esc_html__( 'This information is general and not a substitute for professional medical advice. Contact the practice for guidance about your situation.', 'gleo' )
+					. '</p>';
+			}
+
+			$faq_inner = '<div class="gleo-faq-wrap"><h2 class="wp-block-heading">' . esc_html( $faq_title ) . '</h2>'
+				. '<div class="gleo-faq-accordion">' . $items_html . '</div>'
+				. $disclaimer_html . '</div>';
 				// Wrap as a proper Gutenberg HTML block so the block editor preserves it intact.
 				$faq_block = "<!-- wp:html -->\n" . $faq_inner . "\n<!-- /wp:html -->";
 
@@ -3169,16 +3416,21 @@ CSS;
 					$placement_anchor = (string) get_post_meta( $post_id, '_gleo_faq_placement_anchor', true );
 				}
 
-				$injected = $this->gleo_inject_block_with_strategy( $content, $faq_block, $faq_strategy, $placement_anchor, $layout_map );
-				if ( is_wp_error( $injected ) ) {
-					return $injected;
+				if ( $use_builder_meta ) {
+					// Builder page: append block via the_content filter to avoid touching builder markup.
+					$this->gleo_store_builder_block( $post_id, 'faq', $faq_block );
+				} else {
+					$injected = $this->gleo_inject_block_with_strategy( $content, $faq_block, $faq_strategy, $placement_anchor, $layout_map );
+					if ( is_wp_error( $injected ) ) {
+						return $injected;
+					}
+					$content = $injected;
+					update_post_meta( $post_id, '_gleo_faq_placement', $faq_strategy );
+					if ( $placement_anchor ) {
+						update_post_meta( $post_id, '_gleo_faq_placement_anchor', $placement_anchor );
+					}
+					$modified = true;
 				}
-				$content = $injected;
-				update_post_meta( $post_id, '_gleo_faq_placement', $faq_strategy );
-				if ( $placement_anchor ) {
-					update_post_meta( $post_id, '_gleo_faq_placement_anchor', $placement_anchor );
-				}
-				$modified = true;
 				break;
 
 		case 'visual_enhancement':
@@ -3213,9 +3465,13 @@ CSS;
 					. '<p class="gleo-stats-text">' . esc_html( $stats_text ) . '</p>'
 					. '</div></aside>';
 				$callout = "<!-- wp:html -->\n" . $callout_inner . "\n<!-- /wp:html -->";
-				$pos = $this->find_best_paragraph( $content, 'stats' );
-				$content = $this->inject_after_paragraph( $content, $callout, $pos );
-				$modified = true;
+				if ( $use_builder_meta ) {
+					$this->gleo_store_builder_block( $post_id, 'authority', $callout );
+				} else {
+					$pos     = $this->find_best_paragraph( $content, 'stats' );
+					$content = $this->inject_after_paragraph( $content, $callout, $pos );
+					$modified = true;
+				}
 				break;
 
 		case 'credibility':
@@ -3233,8 +3489,13 @@ CSS;
 				. '<h2 class="wp-block-heading gleo-sources-heading">Sources &amp; References</h2>'
 				. '<ol class="gleo-sources-list">' . $list_items . '</ol>'
 				. '</div>';
-			$content .= "\n<!-- wp:html -->\n" . $sources_inner . "\n<!-- /wp:html -->\n";
-			$modified = true;
+			$sources_block = "<!-- wp:html -->\n" . $sources_inner . "\n<!-- /wp:html -->";
+			if ( $use_builder_meta ) {
+				$this->gleo_store_builder_block( $post_id, 'credibility', $sources_block );
+			} else {
+				$content .= "\n" . $sources_block . "\n";
+				$modified = true;
+			}
 			break;
 
 		case 'content_depth':
@@ -3247,7 +3508,7 @@ CSS;
 					'',
 					$depth_html
 				);
-				$content = rtrim( $content ) . "\n\n" . wp_kses_post( $depth_html );
+				$depth_block = wp_kses_post( $depth_html );
 			} else {
 				// Fallback: inject paragraphs only — no generic "How X works" heading.
 				$clean = trim( preg_replace( '/\s+/', ' ', wp_strip_all_tags( $post->post_content ) ) );
@@ -3255,11 +3516,15 @@ CSS;
 				$topic        = esc_html( $this->gleo_short_topic_label( $post ) );
 				$fallback_one = ! empty( $sentences[0] ) ? $sentences[0] : sprintf( '%s is best understood by looking at the specific details in this article.', $topic );
 				$fallback_two = ! empty( $sentences[1] ) ? $sentences[1] : sprintf( 'Use the points above as context for evaluating %s in your own situation.', $topic );
-				$expansion    = "<!-- wp:paragraph -->\n<p>" . esc_html( $fallback_one ) . "</p>\n<!-- /wp:paragraph -->\n";
-				$expansion   .= "<!-- wp:paragraph -->\n<p>" . esc_html( $fallback_two ) . "</p>\n<!-- /wp:paragraph -->\n";
-				$content = rtrim( $content ) . "\n\n" . $expansion;
+				$depth_block  = "<!-- wp:paragraph -->\n<p>" . esc_html( $fallback_one ) . "</p>\n<!-- /wp:paragraph -->\n";
+				$depth_block .= "<!-- wp:paragraph -->\n<p>" . esc_html( $fallback_two ) . "</p>\n<!-- /wp:paragraph -->\n";
 			}
-			$modified = true;
+			if ( $use_builder_meta ) {
+				$this->gleo_store_builder_block( $post_id, 'content_depth', $depth_block );
+			} else {
+				$content  = rtrim( $content ) . "\n\n" . $depth_block;
+				$modified = true;
+			}
 			break;
 
 

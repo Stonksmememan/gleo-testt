@@ -45,6 +45,22 @@ const FIX_CONFIG = {
     visual_enhancement:   { label: 'Improve website appearance', needsInput: false, successMsg: 'Visual enhancements applied — images, layout, and styling updated.' },
 };
 
+// ── Page builder fix safety tiers ───────────────────────────────────────────
+// Tier A: meta/head fixes — always auto-apply, never touch post_content.
+// Tier B: append blocks — stored in meta, rendered via the_content filter.
+// Tier C: in-place content edits — blocked on builder pages; shown as copy-paste suggestions.
+const FIX_SAFETY_TIERS = {
+    A: [ 'schema', 'schema_enrich', 'opening_summary', 'robots_txt_allow', 'image_alt_text', 'visual_enhancement', 'structure' ],
+    B: [ 'faq', 'answer_readiness', 'content_depth', 'expert_quotes', 'authority', 'credibility' ],
+    C: [ 'formatting', 'readability' ],
+};
+const getFixTier = ft => {
+    if ( FIX_SAFETY_TIERS.A.includes( ft ) ) return 'A';
+    if ( FIX_SAFETY_TIERS.B.includes( ft ) ) return 'B';
+    if ( FIX_SAFETY_TIERS.C.includes( ft ) ) return 'C';
+    return 'A';
+};
+
 // ── Helpers ─────────────────────────────────────────────────────────────────
 const scoreChipClass = s => s >= 70 ? 'chip-hi' : s >= 40 ? 'chip-md' : 'chip-lo';
 
@@ -119,19 +135,27 @@ const SuccessToast = ({ message, onDismiss }) => {
 
 // ── FAQ placement modal ───────────────────────────────────────────────────────
 const FaqPlacementModal = ({ layoutMap, onSubmit, onCancel }) => {
-    const rec = layoutMap?.recommended_strategy || 'append_end';
+    const builderActive = layoutMap?.content_edit_safe === false || layoutMap?.confidence === 'low';
+    // On builder pages lock to append_end — mid-content splicing breaks builder layouts.
+    const rec = builderActive ? 'append_end' : ( layoutMap?.recommended_strategy || 'append_end' );
     const [strategy, setStrategy] = useState(rec);
     const [anchor, setAnchor] = useState('');
     const sections = layoutMap?.sections || [];
+    // Options that splice into existing content are unsafe on builder pages.
+    const safeOptions = builderActive
+        ? [ 'append_end' ]
+        : [ 'append_end', 'append_before_cta', 'skip_if_unsafe', 'manual' ];
     return (
         <div className="gleo-modal-backdrop" onClick={onCancel}>
             <div className="gleo-modal" onClick={e => e.stopPropagation()}>
                 <h3>FAQ placement</h3>
                 <p className="gleo-modal-prompt">Choose where to add the FAQ block.</p>
-                {layoutMap?.confidence === 'low' && (
-                    <p style={{ fontSize: 12, color: 'var(--amber)', marginBottom: 10 }}>Page builder detected — end of page is safest.</p>
+                {builderActive && (
+                    <p style={{ fontSize: 12, color: 'var(--amber)', marginBottom: 10 }}>
+                        Page builder detected — FAQ will be appended safely at page end without editing your builder layout.
+                    </p>
                 )}
-                {['append_end', 'append_before_cta', 'skip_if_unsafe', 'manual'].map(key => (
+                {safeOptions.map(key => (
                     <div key={key} className="gleo-field" style={{ marginBottom: 8 }}>
                         <label style={{ fontSize: 13, cursor: 'pointer' }}>
                             <input type="radio" name="faq-pl" checked={strategy === key} onChange={() => setStrategy(key)} style={{ marginRight: 8 }}/>
@@ -156,6 +180,56 @@ const FaqPlacementModal = ({ layoutMap, onSubmit, onCancel }) => {
                     <button className="gleo-btn gleo-btn-outline" onClick={onCancel}>Cancel</button>
                     <button className="gleo-btn gleo-btn-primary" onClick={() => onSubmit(strategy, anchor)} disabled={strategy === 'manual' && !anchor}>Apply FAQ</button>
                 </div>
+            </div>
+        </div>
+    );
+};
+
+// ── Builder Suggestion Modal ─────────────────────────────────────────────────
+// Shown when a Tier C fix (formatting / readability) is blocked on a builder page.
+// The user can copy the suggested markup and paste it into their builder widget.
+const BuilderSuggestionModal = ({ fixType, builderName, suggestionHtml, onClose }) => {
+    const [copied, setCopied] = React.useState(false);
+    const label = FIX_CONFIG[ fixType ]?.label || fixType;
+    const builderLabel = builderName && builderName !== 'page_builder'
+        ? builderName.charAt(0).toUpperCase() + builderName.slice(1)
+        : 'your page builder';
+    const copy = () => {
+        if ( suggestionHtml ) {
+            navigator.clipboard?.writeText( suggestionHtml ).then(() => {
+                setCopied(true);
+                setTimeout(() => setCopied(false), 2000);
+            });
+        }
+    };
+    return (
+        <div className="gleo-modal-backdrop" onClick={onClose}>
+            <div className="gleo-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: 520 }}>
+                <h3>{label} — copy-paste suggestion</h3>
+                <p className="gleo-modal-prompt" style={{ color: 'var(--amber)' }}>
+                    This page is built with {builderLabel}. Gleo cannot safely edit the layout directly.
+                    Copy the suggested markup below and paste it into your builder widget.
+                </p>
+                {suggestionHtml ? (
+                    <>
+                        <textarea
+                            readOnly
+                            value={suggestionHtml}
+                            style={{ width: '100%', minHeight: 120, fontFamily: 'monospace', fontSize: 12, padding: 8, boxSizing: 'border-box', marginBottom: 8, borderRadius: 4, border: '1px solid #e2e8f0' }}
+                        />
+                        <div className="gleo-modal-actions">
+                            <button className="gleo-btn gleo-btn-outline" onClick={onClose}>Close</button>
+                            <button className="gleo-btn gleo-btn-primary" onClick={copy}>
+                                {copied ? 'Copied!' : 'Copy markup'}
+                            </button>
+                        </div>
+                    </>
+                ) : (
+                    <div className="gleo-modal-actions">
+                        <p style={{ fontSize: 13, color: '#64748b' }}>No suggestion could be generated for this fix type.</p>
+                        <button className="gleo-btn gleo-btn-outline" onClick={onClose}>Close</button>
+                    </div>
+                )}
             </div>
         </div>
     );
@@ -559,7 +633,10 @@ const AnalyticsTab = () => {
 
 	const handleRefreshSov = () => {
 		setIsRefreshing( true ); setRefreshMsg( null ); setApiOffline( false );
-		const queries = ( typeof gleoData !== 'undefined' ? ( gleoData.posts || [] ) : [] ).map( p => p.title );
+		const profile = ( typeof gleoData !== 'undefined' && gleoData.practiceProfile ) ? gleoData.practiceProfile : {};
+		const targetQueries = ( profile.target_queries || [] ).filter( Boolean ).slice( 0, 5 );
+		const postTitles = ( typeof gleoData !== 'undefined' ? ( gleoData.posts || [] ) : [] ).map( p => p.title );
+		const queries = targetQueries.length ? targetQueries : postTitles;
 		fetch( `${ nodeBase }/v1/analytics/sov/refresh`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
@@ -672,7 +749,13 @@ const AnalyticsTab = () => {
 										} ) }
 									</div>
 									<p style={ { fontSize: 11, color: 'var(--fg-muted)', marginTop: 14, lineHeight: 1.5, borderTop: '1px solid var(--border-lt)', paddingTop: 10 } }>
-										Estimate from Tavily search results for your post titles — useful for trends, not a literal ChatGPT mention rate.
+										{ ( () => {
+									const sovProfile = ( typeof gleoData !== 'undefined' && gleoData.practiceProfile ) ? gleoData.practiceProfile : {};
+									const hasTargetQ = ( sovProfile.target_queries || [] ).filter( Boolean ).length > 0;
+									return hasTargetQ
+										? 'Estimate from Tavily for your target patient queries — useful for trends, not a literal ChatGPT mention rate. Set queries in Practice Profile.'
+										: 'Estimate from Tavily search results for your post titles — add target patient queries in Practice Profile to use those instead.';
+								} )() }
 									</p>
 								</div>
 							);
@@ -1182,8 +1265,9 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
     const [optimizeStepIdx, setOptimizeStepIdx] = useState(0);
     const [optimizeDetail, setOptimizeDetail]   = useState('');
     const [optimizeDone, setOptimizeDone]       = useState(false);
-    const [designModal, setDesignModal]                     = useState(null); // { critique }
+    const [designModal, setDesignModal]                       = useState(null); // { critique }
     const [visualEnhancementModal, setVisualEnhancementModal] = useState(null); // { plan }
+    const [builderSuggestionModal, setBuilderSuggestionModal] = useState(null); // { fixType, builderName, suggestionHtml }
     const OPTIMIZE_STEPS = 5;
 
     const siteUrl = typeof gleoData !== 'undefined' ? gleoData.siteUrl : '';
@@ -1214,38 +1298,67 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
     const buildItems = () => {
         const items = [];
         const cs = result.content_signals || {};
+        const profile = ( typeof gleoData !== 'undefined' && gleoData.practiceProfile ) ? gleoData.practiceProfile : {};
+        const practiceType = ( profile.practice_type || '' ).toLowerCase();
+        const isHealthcare = [ 'dentist', 'physician', 'medical_clinic' ].includes( practiceType );
 
-        // ── 1. Technical & Schema (35 pts) ──
+        // ── 1. Technical & Schema ──
+        // Healthcare sites: schema card surfaces insurance, credentials, and healthcare schema type.
         {
             let techScore = 0;
             if (!cs.has_meta_robots_block) techScore += 5;
             if (cs.alt_text_coverage >= 90 || cs.image_count === 0) techScore += 5;
             if (cs.has_llms_txt) techScore += 5;
             let schemaScore = 0;
-            if (cs.has_schema) schemaScore += 10;
-            if (cs.has_faq_schema) schemaScore += 5;
-            if (cs.has_org_schema) schemaScore += 5;
+            if (isHealthcare) {
+                if (cs.has_schema) schemaScore += 8;
+                if (cs.has_faq_schema) schemaScore += 7;
+                if (cs.has_org_schema) schemaScore += 4;
+                if (cs.has_healthcare_schema) schemaScore += 4;
+                if (cs.has_nap_signals) schemaScore += 3;
+                if (cs.has_hours_signals) schemaScore += 2;
+                if (cs.has_booking_link) schemaScore += 2;
+                if (cs.has_insurance_signals) schemaScore += 3;
+                if (cs.has_credentials_signals) schemaScore += 3;
+                schemaScore = Math.min(25, schemaScore);
+            } else {
+                if (cs.has_schema) schemaScore += 10;
+                if (cs.has_faq_schema) schemaScore += 5;
+                if (cs.has_org_schema) schemaScore += 5;
+                schemaScore = Math.min(20, schemaScore);
+            }
+            const schemaMax = isHealthcare ? 25 : 20;
             const score = techScore + schemaScore;
+            const maxScore = 15 + schemaMax;
             const issues = [];
             if (cs.has_meta_robots_block) issues.push('Remove noindex/nofollow meta tag');
             if (cs.image_count > 0 && cs.alt_text_coverage < 90) issues.push(`${cs.alt_text_coverage}% alt text — add descriptive alt text`);
             if (!cs.has_llms_txt) issues.push('Verify /llms.txt (Gleo serves it on your site)');
             if (!cs.has_schema) issues.push('Deploy JSON-LD schema markup');
-            if (!cs.has_faq_schema) issues.push('Add FAQPage schema');
-            if (!cs.has_org_schema) issues.push('Add Organization/Product schema');
-            const msg = score >= 33 ? 'Technical crawlability and schema are in good shape for AI engines.' : issues.join('. ') + '.';
+            if (isHealthcare) {
+                if (!cs.has_healthcare_schema) issues.push('Add Dentist/Physician/MedicalClinic schema type');
+                if (!cs.has_faq_schema) issues.push('Add FAQPage schema — AI prefers Q&A for patient queries');
+                if (!cs.has_insurance_signals) issues.push('List accepted insurance plans on this page');
+                if (!cs.has_credentials_signals) issues.push('Mention provider credentials (DDS, MD, board-certified)');
+                if (!cs.has_nap_signals) issues.push('Add practice name, address, and phone');
+                if (!cs.has_booking_link) issues.push('Add a booking link');
+            } else {
+                if (!cs.has_faq_schema) issues.push('Add FAQPage schema');
+                if (!cs.has_org_schema) issues.push('Add Organization/Product schema');
+            }
+            const msg = score >= (maxScore - 2) ? 'Technical crawlability and schema are in good shape for AI engines.' : issues.join('. ') + '.';
             const techAuto = [];
             if (cs.image_count > 0 && cs.alt_text_coverage < 90) techAuto.push('image_alt_text');
             if (techScore < 15) techAuto.push('robots_txt_allow');
             let schemaPrimary = null;
-            if (schemaScore < 20) {
+            if (schemaScore < schemaMax) {
                 if (!cs.has_schema) schemaPrimary = 'schema';
                 else if (!cs.has_org_schema || !cs.has_faq_schema) schemaPrimary = 'schema_enrich';
             }
             const auto = [ schemaPrimary, ...techAuto.filter( Boolean ) ].filter( ft => ft && FIX_CONFIG[ ft ] && ! FIX_CONFIG[ ft ].needsInput );
             items.push({
-                priority: score >= 33 ? 'positive' : !cs.has_schema ? 'critical' : 'medium',
-                area: GEO_CATEGORY_LABELS.technical, maxScore: 35, score, message: msg,
+                priority: score >= (maxScore - 2) ? 'positive' : !cs.has_schema ? 'critical' : 'medium',
+                area: GEO_CATEGORY_LABELS.technical, maxScore, score, message: msg,
                 fixType: auto[0] || null,
                 extraFixes: auto.slice( 1 ),
                 emoji: '⚙️',
@@ -1260,9 +1373,9 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
             if (cs.has_conversational_queries) score += 3;
             if (cs.has_direct_answers) score += 2;
             const issues = [];
-            if (!cs.has_direct_answer) issues.push('Lead with a 60–100 word direct answer (conclusion-first)');
+            if (!cs.has_direct_answer) issues.push(isHealthcare ? 'Open with a clear patient-facing answer to the main question' : 'Lead with a 60–100 word direct answer (conclusion-first)');
             if (!cs.has_tldr) issues.push('Add an AI-readable page summary (hidden from visitors, available to crawlers)');
-            if (!cs.has_conversational_queries) issues.push('Target conversational, question-style phrasing');
+            if (!cs.has_conversational_queries) issues.push(isHealthcare ? 'Use natural patient language — "how much does," "do you accept," "is it painful"' : 'Target conversational, question-style phrasing');
             if (cs.long_paragraphs > 0) issues.push(`${cs.long_paragraphs} long paragraph(s) — shorten for readability`);
             const msg = score >= 13 ? 'Writing style is clear, direct, and easy for AI to quote.' : issues.join('. ') + '.';
             const fixes = [];
@@ -1278,60 +1391,95 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
             });
         }
 
-        // ── 3. Content Substance (15 pts) ──
+        // ── 3. Content Substance ──
+        // Healthcare: shorter focused pages score well; local intent replaces raw word count emphasis.
         {
             let score = 0;
-            if (cs.word_count >= 2000) score += 8;
-            else if (cs.word_count >= 1200) score += 6;
-            else if (cs.word_count >= 600) score += 3;
-            else if (cs.word_count > 0) score += 1;
-            if (cs.stat_count >= 1) score += 4;
-            if (cs.has_quotes) score += 3;
+            const substantiveMax = isHealthcare ? 12 : 15;
+            if (isHealthcare) {
+                if (cs.word_count >= 800) score += 4;
+                else if (cs.word_count >= 400) score += 2;
+                else if (cs.word_count > 0) score += 1;
+                if (cs.has_local_intent_signals) score += 4;
+                if (cs.has_quotes) score += 4;
+            } else {
+                if (cs.word_count >= 2000) score += 8;
+                else if (cs.word_count >= 1200) score += 6;
+                else if (cs.word_count >= 600) score += 3;
+                else if (cs.word_count > 0) score += 1;
+                if (cs.stat_count >= 1) score += 4;
+                if (cs.has_quotes) score += 3;
+            }
             const issues = [];
-            if (cs.word_count < 1200) issues.push(`${cs.word_count} words — add depth, examples, or case studies`);
-            if (cs.stat_count < 1) issues.push('Add concrete statistics or outcomes');
-            if (!cs.has_quotes) issues.push('Include testimonials or expert quotes');
-            const msg = score >= 13 ? 'Strong topical depth and credibility signals in the body.' : issues.join('. ') + '.';
+            if (isHealthcare) {
+                if (cs.word_count < 400) issues.push(`${cs.word_count} words — add patient-facing detail (insurance, recovery, what to expect)`);
+                if (!cs.has_local_intent_signals) issues.push('Mention your city or service area — local intent drives healthcare searches');
+                if (!cs.has_quotes) issues.push('Include a provider quote or verified patient testimonial');
+            } else {
+                if (cs.word_count < 1200) issues.push(`${cs.word_count} words — add depth, examples, or case studies`);
+                if (cs.stat_count < 1) issues.push('Add concrete statistics or outcomes');
+                if (!cs.has_quotes) issues.push('Include testimonials or expert quotes');
+            }
+            const msg = score >= (substantiveMax - 2) ? 'Strong topical depth and credibility signals in the body.' : issues.join('. ') + '.';
             const sub = [];
-            if (cs.word_count < 1200) sub.push('content_depth');
+            if (!isHealthcare && cs.word_count < 1200) sub.push('content_depth');
             if (!cs.has_quotes) sub.push('expert_quotes');
             const subF = sub.filter(ft => FIX_CONFIG[ft] && !FIX_CONFIG[ft].needsInput);
             items.push({
-                priority: score >= 13 ? 'positive' : score <= 5 ? 'high' : 'medium',
-                area: GEO_CATEGORY_LABELS.substance, maxScore: 15, score, message: msg,
+                priority: score >= (substantiveMax - 2) ? 'positive' : score <= 4 ? 'high' : 'medium',
+                area: GEO_CATEGORY_LABELS.substance, maxScore: substantiveMax, score, message: msg,
                 fixType: subF[0] || null,
                 extraFixes: subF.slice(1),
                 emoji: '📚',
             });
         }
 
-        // ── 4. Trust & Brand Signals (15 pts) ──
+        // ── 4. Trust & Brand Signals ──
+        // Healthcare: disclaimer is a scored signal; stats rewards lower to discourage invented claims.
         {
             let score = 0;
-            if (cs.stat_count >= 3) score += 5;
-            else if (cs.stat_count >= 1) score += 3;
-            if (cs.citation_count >= 3) score += 5;
-            else if (cs.citation_count >= 1) score += 3;
-            if (cs.has_quotes) score += 5;
+            if (isHealthcare) {
+                if (cs.stat_count >= 3) score += 3;
+                else if (cs.stat_count >= 1) score += 2;
+                if (cs.citation_count >= 3) score += 5;
+                else if (cs.citation_count >= 1) score += 3;
+                if (cs.has_quotes) score += 5;
+                if (cs.has_disclaimer) score += 2;
+            } else {
+                if (cs.stat_count >= 3) score += 5;
+                else if (cs.stat_count >= 1) score += 3;
+                if (cs.citation_count >= 3) score += 5;
+                else if (cs.citation_count >= 1) score += 3;
+                if (cs.has_quotes) score += 5;
+            }
+            const trustMax = 15;
             const issues = [];
-            if (cs.stat_count < 3) issues.push('Add first-party statistics and data');
-            if (cs.citation_count < 3) issues.push('Link to authoritative external sources');
-            if (!cs.has_quotes) issues.push('Include expert quotes or testimonials');
-            const msg = score === 15 ? 'Excellent credibility signals. Statistics, citations, and expert quotes are present.' : issues.join('. ') + '.';
+            if (isHealthcare) {
+                if (cs.stat_count < 1) issues.push('Include practice-specific stats (years in practice, procedures performed)');
+                if (cs.citation_count < 3) issues.push('Link to ADA, AAP, or AAFP sources for clinical claims');
+                if (!cs.has_quotes) issues.push('Add a provider quote or verified patient testimonial');
+                if (!cs.has_disclaimer) issues.push('Add a disclaimer — e.g. "Consult your provider for personal guidance"');
+            } else {
+                if (cs.stat_count < 3) issues.push('Add first-party statistics and data');
+                if (cs.citation_count < 3) issues.push('Link to authoritative external sources');
+                if (!cs.has_quotes) issues.push('Include expert quotes or testimonials');
+            }
+            const msg = score === trustMax ? (isHealthcare ? 'Strong credibility signals including disclaimer and authoritative citations.' : 'Excellent credibility signals. Statistics, citations, and expert quotes are present.') : issues.join('. ') + '.';
             const credF = [];
             if (!cs.has_quotes) credF.push('expert_quotes');
             items.push({
-                priority: score === 15 ? 'positive' : score <= 5 ? 'high' : 'medium',
-                area: GEO_CATEGORY_LABELS.trust, maxScore: 15, score, message: msg,
-                // credibility (Add Sources) always offered when citations are low — it's a manual-input fix shown separately
-                fixType: score < 15 ? (credF[0] || null) : null,
-                extraFixes: score < 15 ? credF.slice(1) : [],
+                priority: score === trustMax ? 'positive' : score <= 5 ? 'high' : 'medium',
+                area: GEO_CATEGORY_LABELS.trust, maxScore: trustMax, score, message: msg,
+                fixType: score < trustMax ? (credF[0] || null) : null,
+                extraFixes: score < trustMax ? credF.slice(1) : [],
                 emoji: '🛡️',
             });
         }
 
         // ── 5. Structure & Formatting (20 pts) ──
+        // Healthcare: FAQ block worth 8 pts instead of 6.
         {
+            const faqPts = isHealthcare ? 8 : 6;
             let score = 0;
             if (cs.heading_count >= 4) score += 5;
             else if (cs.heading_count >= 2) score += 3;
@@ -1340,13 +1488,13 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
             else if (cs.long_paragraphs <= 2) score += 3;
             if (cs.list_item_count >= 3) score += 4;
             else if (cs.has_lists) score += 2;
-            // FAQ block: 6 pts (redistributed from removed table check)
-            if (cs.has_faq) score += 6;
+            if (cs.has_faq) score += faqPts;
+            score = Math.min(20, score);
             const issues = [];
             if (cs.heading_count < 4) issues.push(`${cs.heading_count} headings — add H2s every ~3 paragraphs`);
             if (cs.long_paragraphs > 0) issues.push(`${cs.long_paragraphs} long paragraph(s) to shorten`);
             if (!cs.has_lists) issues.push('Convert dense text to bulleted lists');
-            if (!cs.has_faq) issues.push('Add a contextual FAQ block');
+            if (!cs.has_faq) issues.push(isHealthcare ? 'Add a patient FAQ section — it\'s the format AI prefers for healthcare queries' : 'Add a contextual FAQ block');
             const msg = score === 20 ? 'Excellent AI-specific formatting. Content is fully optimized for AI extraction.' : issues.join('. ') + '.';
             items.push({
                 priority: score === 20 ? 'positive' : score <= 8 ? 'high' : 'medium',
@@ -1429,10 +1577,24 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
                 if ( typeof res?.geo_score === 'number' && onReportUpdated ) {
                     onReportUpdated( post_id, { ...result, geo_score: res.geo_score } );
                 }
-                addToast( config?.successMsg || `${ fixType } applied.` );
+                const isBuilderAppend = result.layout_map?.content_edit_safe === false && FIX_SAFETY_TIERS.B.includes( fixType );
+                const successMsg = isBuilderAppend
+                    ? ( config?.successMsg || `${ fixType } applied.` ) + ' Block appended at page end (builder-safe).'
+                    : ( config?.successMsg || `${ fixType } applied.` );
+                addToast( successMsg );
             } )
             .catch(err => {
-                const msg = err?.code === 'placement_skipped' || err?.data?.code === 'placement_skipped'
+                const code = err?.code || err?.data?.code;
+                if ( code === 'builder_suggestion' ) {
+                    // Tier C fix blocked on builder page — open suggestion modal instead of error toast.
+                    setBuilderSuggestionModal({
+                        fixType,
+                        builderName: err?.data?.builder_name || '',
+                        suggestionHtml: err?.data?.suggestion_html || '',
+                    });
+                    return;
+                }
+                const msg = code === 'placement_skipped'
                     ? ( err.message || 'FAQ not injected — layout too complex. Try "End of page".' )
                     : ( err.message || 'Unknown error' );
                 addToast( `Failed: ${ msg }` );
@@ -1505,6 +1667,11 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
             launchVisualEnhancement();
             return;
         }
+        // Tier C fixes on builder pages: route to suggestion modal without a round-trip to the server.
+        if ( result.layout_map?.content_edit_safe === false && getFixTier( fixType ) === 'C' ) {
+            doApply( fixType ); // server returns 409 builder_suggestion → doApply opens the modal
+            return;
+        }
         if (config.needsInput) setModal({ fixType, title: config.label, prompt: config.prompt, inputType: config.inputType });
         else doApply(fixType);
     };
@@ -1566,16 +1733,20 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
     };
 
     const collectAllAutoFixTypes = () => {
+        const builderActive = result.layout_map?.content_edit_safe === false;
         const allFixTypes = new Set();
         for ( const item of allItems ) {
             if ( item.noAutofix ) {
                 continue;
             }
             if ( item.fixType && ! FIX_CONFIG[ item.fixType ]?.needsInput ) {
+                // Skip Tier C in-place edits on builder pages — they would return builder_suggestion 409.
+                if ( builderActive && getFixTier( item.fixType ) === 'C' ) continue;
                 allFixTypes.add( item.fixType );
             }
             ( item.extraFixes || [] ).forEach( ft => {
                 if ( FIX_CONFIG[ ft ] && ! FIX_CONFIG[ ft ].needsInput ) {
+                    if ( builderActive && getFixTier( ft ) === 'C' ) return;
                     allFixTypes.add( ft );
                 }
             } );
@@ -1755,6 +1926,16 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
             />
 
             <div className="gleo-report-workflow">
+                {result.layout_map?.content_edit_safe === false && (
+                    <div style={{ background: '#fffbeb', border: '1px solid #fcd34d', borderRadius: 6, padding: '10px 14px', marginBottom: 12, fontSize: 13, color: '#92400e', lineHeight: 1.5 }}>
+                        <strong>Page builder detected</strong>
+                        {result.layout_map?.builder_detected && result.layout_map.builder_detected !== 'page_builder' && (
+                            <> ({result.layout_map.builder_detected.charAt(0).toUpperCase() + result.layout_map.builder_detected.slice(1)})</>
+                        )}
+                        {'. '}
+                        Schema and metadata fixes apply automatically. FAQ, depth, and quote blocks are appended safely at page end. Formatting and readability edits are shown as copy-paste suggestions to avoid breaking your layout.
+                    </div>
+                )}
                 <p className="gleo-workflow-label">One-click optimize: fixes → AI vision review → re-score.</p>
                 <div className="gleo-workflow-actions">
                     { postUrl ? (
@@ -1772,7 +1953,10 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
                         { isApplyingAll ? 'Applying…' : 'Apply fixes only' }
                     </button>
                 </div>
-                <p className="gleo-workflow-hint">Fixes that need your input (statistics, sources) stay one click each below. FAQ fix opens a placement picker.</p>
+                <p className="gleo-workflow-hint">
+                    Fixes that need your input (statistics, sources) stay one click each below. FAQ fix opens a placement picker.
+                    {result.layout_map?.content_edit_safe === false && ' Formatting and readability fixes show copy-paste suggestions instead of editing your builder layout.'}
+                </p>
                 {appliedTypes.faq && (
                     <button type="button" className="gleo-btn gleo-btn-outline" style={{ fontSize: 12, marginTop: 8 }}
                         onClick={() => setModal({ fixType: 'faq_placement', title: 'Move FAQ', layoutMap: result.layout_map || {} })}>
@@ -1891,6 +2075,14 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
                     onApplyAll={ handleApplyAll } applyingAll={ isApplyingAll } allApplied={ allAutoFixed }/>
             ) }
 
+            {builderSuggestionModal && (
+                <BuilderSuggestionModal
+                    fixType={builderSuggestionModal.fixType}
+                    builderName={builderSuggestionModal.builderName}
+                    suggestionHtml={builderSuggestionModal.suggestionHtml}
+                    onClose={() => setBuilderSuggestionModal(null)}
+                />
+            )}
             {modal && modal.fixType === 'faq_placement' && (
                 <FaqPlacementModal
                     layoutMap={modal.layoutMap}

@@ -29,9 +29,45 @@ const GENERIC_COPY_PATTERNS = [
   /data overview/i,
 ];
 
+// Risky medical claim patterns that should never appear in AI-generated copy.
+const RISKY_MEDICAL_CLAIM_PATTERNS = [
+  /\bguaranteed\b/i,
+  /\bcure[sd]?\b/i,
+  /\balways works\b/i,
+  /\bno risk\b/i,
+  /\bwill eliminate\b/i,
+  /\bpermanently fix(es)?\b/i,
+  /\bcompletely pain[- ]free\b/i,
+  /\b100%\s+(effective|success|guaranteed|painless)\b/i,
+  /\bfda[- ]approved\b/i,
+];
+
+/**
+ * Returns true when the practice profile indicates a healthcare practice
+ * (dentist, physician, or medical_clinic). All other practice types, and
+ * sites with no profile, use the standard scoring weights.
+ */
+function isHealthcarePractice(practiceProfile) {
+  const type = practiceProfile?.practice_type || '';
+  return ['dentist', 'physician', 'medical_clinic'].includes(type.toLowerCase());
+}
+
 function looksGenericCopy(html = '') {
   if (!html || typeof html !== 'string') return false;
   return GENERIC_COPY_PATTERNS.some((re) => re.test(html));
+}
+
+/**
+ * Returns true when generated medical copy makes absolute outcome claims or
+ * guarantee language not present in the source excerpt.
+ */
+function looksMedicalClaim(html = '', sourceExcerpt = '') {
+  if (!html || typeof html !== 'string') return false;
+  return RISKY_MEDICAL_CLAIM_PATTERNS.some((re) => {
+    if (!re.test(html)) return false;
+    // Only block claims that were invented — not language already in the source.
+    return !re.test(sourceExcerpt);
+  });
 }
 
 /** Instructional / editor-placeholder “statistics” the model must not emit (or we strip). */
@@ -42,7 +78,7 @@ function looksStatInstructionPlaceholder(text = '') {
   return ['add a verified', 'source-backed metric', 'figure and source name', 'verified, source-backed', 'include the figure'].some((n) => t.includes(n));
 }
 
-function sanitizeContextualAssets(assets) {
+function sanitizeContextualAssets(assets, isHealthcare = false, sourceExcerpt = '') {
   if (!assets || typeof assets !== 'object') return null;
   const keys = ['faq_html', 'depth_html', 'qa_html', 'authority_html'];
   const out = { ...assets };
@@ -56,48 +92,90 @@ function sanitizeContextualAssets(assets) {
       out[key] = '';
       continue;
     }
+    if (isHealthcare && looksMedicalClaim(out[key], sourceExcerpt)) {
+      out[key] = '';
+      continue;
+    }
     hasAny = true;
   }
   if (looksStatInstructionPlaceholder(out.authority_html)) {
     out.authority_html = '';
+  }
+  // In healthcare mode, strip authority_html when it invents numbers not present in the source.
+  if (isHealthcare && out.authority_html) {
+    const numbers = (out.authority_html.match(/\d[\d,.]*%?/g) || []);
+    if (numbers.length > 0 && numbers.every(n => !sourceExcerpt.includes(n))) {
+      out.authority_html = '';
+    }
   }
   return hasAny ? out : null;
 }
 
 /**
  * Generates specifically contextual HTML elements dynamically based on the post.
+ * When a healthcare practice profile is provided, uses patient-intent prompts
+ * and YMYL-safe guardrails.
  */
-async function generateContextualAssets(title, content, layoutMap = null) {
+async function generateContextualAssets(title, content, layoutMap = null, practiceProfile = null) {
   const $ = cheerio.load(content || '');
   $('script, style, noscript, svg, path, iframe, nav, footer, header, aside').remove();
   const plainText = $('body').text().replace(/\s+/g, ' ').substring(0, 3000).trim();
   const layoutHint = layoutMap?.sections?.length
     ? `\nPage sections (context only — FAQ goes in a dedicated block): ${layoutMap.sections.map(s => s.label).join(', ')}.`
     : '';
+
+  const isHealthcare = isHealthcarePractice(practiceProfile);
+
+  let systemInstruction, userPrompt, faqDescription, authorityDescription;
+
+  if (isHealthcare) {
+    const practiceCity = (practiceProfile?.locations?.[0]?.city || '').trim();
+    const specialty = (practiceProfile?.specialty || practiceProfile?.practice_type || '').trim();
+    const targetQueries = (practiceProfile?.target_queries || []).filter(Boolean).slice(0, 3);
+    const seedQuestionsHint = targetQueries.length
+      ? `\nPatient queries to consider seeding into FAQ (use if relevant to the article): ${targetQueries.map(q => `"${q}"`).join(', ')}.`
+      : '';
+    const contextHint = [practiceCity, specialty].filter(Boolean).join(', ');
+
+    systemInstruction = "You are a patient-facing healthcare content editor. Write clear, reassuring copy a patient would actually read. No academic language, no invented statistics, no medical outcome guarantees. Every claim must be grounded in the article excerpt. Return strict JSON only.";
+
+    userPrompt = `Article title: ${title}\nArticle excerpt: ${plainText}${layoutHint}${seedQuestionsHint}\nPractice context: ${contextHint || 'healthcare practice'}\n\nWrite HTML snippets for a healthcare practice website. Generated HTML is content-only — placed in a dedicated section, not mid-article. FAQ: H3 questions only (no H2 wrapper).\n\nBANNED phrases: "a closer look", "key details", "deep dive", "why choose us", "elevate your", "mechanism of", "pathophysiology", "overview of", "etiology", "in summary". Banned headings: "How X works", "Overview of X", "What is X".\n\nBANNED in any field: guaranteed results, cure, "no risk", "100% effective", "will eliminate", "permanently fix", "completely pain-free", "FDA-approved" (unless in the excerpt).\n\nFAQ questions MUST sound like real patient Google searches — about cost, insurance acceptance, pain, recovery time, sedation options, referrals, or appointment availability. Never use academic or research phrasing.\n\nFor any clinical answer, end with: "Speak with your provider for advice specific to your situation."\n\nNever output stat placeholder instructions. Only include statistics that appear in the excerpt.\n\nInclude: (1) FAQ 2–3 H3 patient questions, (2) one H2 + paragraph grounded in the excerpt, (3) compact Q&A block with a patient question, (4) one <p> with stats only if the excerpt contains numbers — otherwise <p></p>.`;
+
+    faqDescription = "FAQ block: 2–3 H3 patient questions only (no H2 wrapper). Questions must read like real patient Google searches — e.g. 'Does [procedure] hurt?', 'Do you accept insurance for [topic]?', 'How long is recovery after [topic]?', 'How much does [topic] cost?'. Never academic, never guarantee outcomes. If a clinical answer is included, it must end with 'Speak with your provider for advice specific to your situation.'";
+    authorityDescription = "Single <p> only: include 1–2 real numeric statistics that appear verbatim in the article excerpt, written as natural prose. If no numbers appear in the excerpt, output <p></p>. Never invent statistics.";
+  } else {
+    systemInstruction = "You are a senior editor for a small business website. Write natural, trustworthy copy that matches the excerpt. No SEO filler, no robotic templates, no generic section titles. Return strict JSON only.";
+
+    userPrompt = `Article title: ${title}\nArticle excerpt: ${plainText}${layoutHint}\n\nWrite HTML snippets for WordPress. Generated HTML is content-only — Gleo places it in a dedicated section, not mid-article. FAQ: H3 questions only (no H2 wrapper).\n\nBanned phrases: "a closer look", "key details", "what you need to know", "deep dive", "why choose us", "elevate your". Banned headings: "How X works", "Overview of X", "What is X".\n\nFAQ questions must read like real Google searches. Never output stat placeholder instructions.\n\nInclude: (1) FAQ 2–3 H3 questions, (2) one H2 + paragraph, (3) compact Q&A block, (4) one <p> with stats if excerpt supports it.`;
+
+    faqDescription = "FAQ block: 2–3 H3 questions only (no H2 wrapper — the title is added separately). Each question must read exactly like a real customer Google search (e.g. 'How much does X cost?', 'Do you offer same-day X?', 'What's included in X?'). Never use academic, generic, or 'how X works' phrasing.";
+    authorityDescription = "Single <p> only: 2–3 real numeric statistics grounded in the excerpt as flowing prose; never instructions to the editor; use <p></p> if no numbers exist in the excerpt.";
+  }
+
   try {
     const response = await ai.models.generateContent({
       model: "gemini-2.5-flash",
       contents: [
-        { role: "user", parts: [{ text: `Article title: ${title}\nArticle excerpt: ${plainText}${layoutHint}\n\nWrite HTML snippets for WordPress. Generated HTML is content-only — Gleo places it in a dedicated section, not mid-article. FAQ: H3 questions only (no H2 wrapper).\n\nBanned phrases: "a closer look", "key details", "what you need to know", "deep dive", "why choose us", "elevate your". Banned headings: "How X works", "Overview of X", "What is X".\n\nFAQ questions must read like real Google searches. Never output stat placeholder instructions.\n\nInclude: (1) FAQ 2–3 H3 questions, (2) one H2 + paragraph, (3) compact Q&A block, (4) one <p> with stats if excerpt supports it.` }] }
+        { role: "user", parts: [{ text: userPrompt }] }
       ],
       config: {
-        systemInstruction: "You are a senior editor for a small business website. Write natural, trustworthy copy that matches the excerpt. No SEO filler, no robotic templates, no generic section titles. Return strict JSON only.",
+        systemInstruction,
         responseMimeType: "application/json",
         responseSchema: {
           type: "OBJECT",
           properties: {
-            faq_html: { type: "STRING", description: "FAQ block: 2–3 H3 questions only (no H2 wrapper — the title is added separately). Each question must read exactly like a real customer Google search (e.g. 'How much does X cost?', 'Do you offer same-day X?', 'What's included in X?'). Never use academic, generic, or 'how X works' phrasing." },
+            faq_html: { type: "STRING", description: faqDescription },
             depth_html: { type: "STRING", description: "One H2 with a specific, topic-grounded title (never 'How X works', 'Background on X', or any generic section label) plus one <p> that adds genuinely useful detail grounded in the excerpt." },
             qa_html: { type: "STRING", description: "Short Q&A block: natural question heading plus direct answer paragraph about the article's core idea." },
-            authority_html: { type: "STRING", description: "Single <p> only: 2–3 real numeric statistics grounded in the excerpt as flowing prose; never instructions to the editor; use <p></p> if no numbers exist in the excerpt." }
+            authority_html: { type: "STRING", description: authorityDescription }
           },
           required: ["faq_html", "depth_html", "qa_html", "authority_html"]
         }
       }
     });
-    
+
     try {
-      return sanitizeContextualAssets(JSON.parse(response.text));
+      return sanitizeContextualAssets(JSON.parse(response.text), isHealthcare, plainText);
     } catch (e) {
       console.error('[GEO] Failed to parse Gemini response:', e.message);
       throw new Error("Gemini parsing failed");
@@ -147,19 +225,20 @@ async function analyzePost(post, siteUrl = '', practiceProfile = null) {
   const contentSignals = analyzeContentSignals(content, title, practiceProfile);
 
   // --- Step 3b: Page layout map for safe content placement ---
-  const layoutMap = analyzePageLayout(content);
+  // builder_meta hint from the scanner (post meta) helps when rendered HTML is cached/minified.
+  const layoutMap = analyzePageLayout(content, post.builder_meta || '');
 
   // --- Step 4: GEO Score (0-100) ---
-  const geoScore = calculateGeoScore(contentSignals, brandInclusionRate, tavilyResults);
+  const geoScore = calculateGeoScore(contentSignals, brandInclusionRate, tavilyResults, practiceProfile);
 
   // --- Step 5: Generate JSON-LD Schema ---
   const jsonLdSchema = generateJsonLd(title, content, siteUrl);
-  
+
   // --- Step 6: Generate Contextual Assets ---
-  const contextualAssets = await generateContextualAssets(title, content, layoutMap);
+  const contextualAssets = await generateContextualAssets(title, content, layoutMap, practiceProfile);
 
   // --- Step 7: Build Specific Recommendations (Granular Scoring) ---
-  const recommendations = generateRecommendations(contentSignals, brandInclusionRate, geoScore);
+  const recommendations = generateRecommendations(contentSignals, brandInclusionRate, geoScore, practiceProfile, layoutMap);
 
   return {
     id,
@@ -211,18 +290,36 @@ function calculateBrandInclusion(results, siteUrl, postTitle) {
 }
 
 /**
- * Build a layout map from rendered HTML for safe GEO block placement.
+ * Identify which page builder (if any) produced the HTML.
+ * Returns a specific slug ('elementor', 'divi', etc.) or '' when none is detected.
  */
-function analyzePageLayout(htmlContent) {
+function detectBuilderFromHtml(html) {
+  if (/data-elementor-type|class="elementor|elementor-widget-container/i.test(html)) return 'elementor';
+  if (/et_pb_section|et_pb_row|class="et_pb_/i.test(html)) return 'divi';
+  if (/vc_row|wpb_wrapper|vc_column/i.test(html)) return 'wpbakery';
+  if (/fl-builder|fl-module/i.test(html)) return 'beaver';
+  if (/class="brxe-|bricks-element/i.test(html)) return 'bricks';
+  if (/oxygen-vsb|ct-section|class="ct-/i.test(html)) return 'oxygen';
+  if (/fusion-builder|fusion-layout-column/i.test(html)) return 'fusion';
+  // Generic fallback for unknown/ambiguous builder markers
+  if (/\b(_elementor|et_pb_|fl-builder|wpb_wrapper)\b/i.test(html)) return 'page_builder';
+  return '';
+}
+
+/**
+ * Build a layout map from rendered HTML for safe GEO block placement.
+ *
+ * @param {string} htmlContent  Rendered HTML of the page.
+ * @param {string} builderHint  Builder name hint from post meta (helps when HTML is cached/minified).
+ */
+function analyzePageLayout(htmlContent, builderHint = '') {
   const $ = cheerio.load(htmlContent || '');
   const root = $('.entry-content, .wp-block-post-content, article, main').first();
   const scope = root.length ? root : $('body');
 
-  let builderDetected = '';
   const html = htmlContent || '';
-  if (/elementor|_elementor|et_pb_|vc_row|fl-builder|wpb_wrapper/i.test(html)) {
-    builderDetected = 'page_builder';
-  }
+  const builderDetected = detectBuilderFromHtml(html) || builderHint || '';
+  const contentEditSafe = !builderDetected;
 
   const testimonialRe = /testimonial|review|what patients say|patient stories|our reviews/i;
   const ctaRe = /contact|book (now|an appointment|online)|schedule|get in touch|request appointment|find us|location/i;
@@ -257,6 +354,7 @@ function analyzePageLayout(htmlContent) {
 
   return {
     builder_detected: builderDetected,
+    content_edit_safe: contentEditSafe,
     confidence,
     recommended_strategy: recommendedStrategy,
     sections,
@@ -299,10 +397,11 @@ function analyzeContentSignals(htmlContent, title, practiceProfile = null) {
   let hasOrgSchema = false;
   let hasHealthcareSchema = false;
   schemaScripts.each((i, el) => {
-    const txt = $(el).text();
+    const txt = $full(el).text();
     if (/FAQPage/i.test(txt)) hasFaqSchema = true;
     if (/Organization|LocalBusiness|Product|Person/i.test(txt)) hasOrgSchema = true;
-    if (/Dentist|Physician|MedicalClinic|MedicalBusiness/i.test(txt)) hasHealthcareSchema = true;
+    // Expanded healthcare schema types (Phase 3)
+    if (/Dentist|Physician|MedicalClinic|MedicalBusiness|Hospital|MedicalOrganization|HealthAndBeautyBusiness|DentistOffice|PhysicianOffice|MedicalProcedure|MedicalCondition/i.test(txt)) hasHealthcareSchema = true;
   });
 
   // ── 3. Content Quality ──
@@ -396,6 +495,54 @@ function analyzeContentSignals(htmlContent, title, practiceProfile = null) {
     });
   }
 
+  // ── Phase 3: Healthcare-specific signals ──
+
+  // Insurance: profile payer names on page, or generic insurance language
+  let hasInsuranceSignals = false;
+  const profileInsurers = (practiceProfile?.insurance_accepted || []).filter(Boolean);
+  if (profileInsurers.length > 0) {
+    hasInsuranceSignals = profileInsurers.some(ins => {
+      const safe = ins.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      return new RegExp(safe, 'i').test(cleanText);
+    });
+  }
+  if (!hasInsuranceSignals) {
+    hasInsuranceSignals = /\b(in[- ]?network|accepts?\s+(insurance|most\s+insurance|many\s+plans)|we\s+accept|insurance\s+(accepted|welcome|coverage)|delta\s+dental|aetna|cigna|metlife|humana|guardian|principal|united\s+health|bcbs|blue\s+cross|medicaid|medicare|tricare)\b/i.test(cleanText);
+  }
+
+  // Credentials: provider credential suffixes or board-certified language
+  let hasCredentialsSignals = false;
+  const profileProviders = (practiceProfile?.providers || []);
+  if (profileProviders.length > 0) {
+    hasCredentialsSignals = profileProviders.some(p => {
+      const name = (p.name || '').trim();
+      return name && cleanText.includes(name);
+    });
+  }
+  if (!hasCredentialsSignals) {
+    hasCredentialsSignals = /\b(DDS|DMD|MD|DO|DPM|PA-C|NP|RN|CRNA|OD|DC|PhD)\b|board[- ]certified|fellow\s+of\s+the|residency[- ]trained|diplomate\s+of/i.test(cleanText);
+  }
+
+  // Local intent: city/state/ZIP from profile locations appear in content, or serving-area patterns
+  let hasLocalIntentSignals = false;
+  const profileLocations = (practiceProfile?.locations || []);
+  if (profileLocations.length > 0) {
+    hasLocalIntentSignals = profileLocations.some(loc => {
+      const city = (loc.city || '').trim();
+      const state = (loc.state || '').trim();
+      const zip = (loc.zip || '').trim();
+      return (city && new RegExp(`\\b${city.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(cleanText))
+        || (state && new RegExp(`\\b${state.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(cleanText))
+        || (zip && cleanText.includes(zip));
+    });
+  }
+  if (!hasLocalIntentSignals) {
+    hasLocalIntentSignals = /\b(serving|patients\s+in|near\s+[a-z]+|located\s+in|our\s+[a-z]+\s+office|families\s+in)\b/i.test(cleanText);
+  }
+
+  // Disclaimer: standard medical/dental disclaimer language
+  const hasDisclaimer = /not\s+(medical|dental)\s+advice|consult\s+(your\s+)?(doctor|dentist|physician|provider|healthcare)|for\s+informational\s+purposes|does\s+not\s+replace|individual\s+results\s+may\s+vary|speak\s+with\s+your\s+(provider|doctor|dentist)/i.test(cleanText);
+
   return {
     word_count: wordCount,
     // Technical
@@ -435,85 +582,134 @@ function analyzeContentSignals(htmlContent, title, practiceProfile = null) {
     has_nap_signals: hasNapSignals,
     has_hours_signals: hasHoursSignals,
     has_booking_link: hasBookingLink,
+    // Healthcare signals (Phase 3)
+    has_insurance_signals: hasInsuranceSignals,
+    has_credentials_signals: hasCredentialsSignals,
+    has_local_intent_signals: hasLocalIntentSignals,
+    has_disclaimer: hasDisclaimer,
   };
 }
 
 /**
  * Calculates the overall GEO score (0-100) using the 5-pillar framework.
+ * When a healthcare practice profile is supplied, weights shift toward patient-intent
+ * signals (FAQ, credentials, insurance, local intent) and away from raw word count.
  */
-function calculateGeoScore(signals, brandRate, tavilyResults) {
+function calculateGeoScore(signals, brandRate, tavilyResults, practiceProfile = null) {
+  const healthcare = isHealthcarePractice(practiceProfile);
   let score = 0;
 
-  // ── 1. Technical Crawlability (max 15) ──
-  // Alt text coverage: 5 pts
+  // ── 1. Technical Crawlability (max 15) — same for all sites ──
   if (signals.alt_text_coverage >= 90) score += 5;
   else if (signals.alt_text_coverage >= 50) score += 3;
-  else if (signals.image_count === 0) score += 5; // No images = no penalty
-  
-  // No robots blocking: 5 pts
+  else if (signals.image_count === 0) score += 5;
+
   if (!signals.has_meta_robots_block) score += 5;
-  
-  // llms.txt: 5 pts
   if (signals.has_llms_txt) score += 5;
 
-  // ── 2. Structured Data & Schema (max 20) ──
-  let pillar2 = 0;
-  if (signals.has_schema) pillar2 += 10;
-  if (signals.has_faq_schema) pillar2 += 5;
-  if (signals.has_org_schema) pillar2 += 5;
-  // Practice profile detection signals (+3/+2/+2, capped at pillar max of 20)
-  if (signals.has_nap_signals) pillar2 += 3;
-  if (signals.has_hours_signals) pillar2 += 2;
-  if (signals.has_booking_link) pillar2 += 2;
-  score += Math.min(20, pillar2);
+  if (healthcare) {
+    // ── 2. Structured Data & Schema — healthcare (max 25) ──
+    // FAQ schema and healthcare-specific types are weighted higher than for generic sites.
+    let pillar2 = 0;
+    if (signals.has_schema) pillar2 += 8;
+    if (signals.has_faq_schema) pillar2 += 7;
+    if (signals.has_org_schema) pillar2 += 4;
+    if (signals.has_healthcare_schema) pillar2 += 4;
+    if (signals.has_nap_signals) pillar2 += 3;
+    if (signals.has_hours_signals) pillar2 += 2;
+    if (signals.has_booking_link) pillar2 += 2;
+    if (signals.has_insurance_signals) pillar2 += 3;
+    if (signals.has_credentials_signals) pillar2 += 3;
+    score += Math.min(25, pillar2);
 
-  // ── 3. Content Quality (max 30) ──
-  // Depth: 10 pts
-  if (signals.word_count >= 2000) score += 10;
-  else if (signals.word_count >= 1200) score += 7;
-  else if (signals.word_count >= 600) score += 4;
-  else if (signals.word_count > 0) score += 1;
-  
-  // Direct answer / inverted pyramid: 10 pts
-  if (signals.has_direct_answer) score += 5;
-  if (signals.has_tldr) score += 5;
-  
-  // Conversational query targeting: 5 pts
-  if (signals.has_conversational_queries) score += 3;
-  if (signals.has_direct_answers) score += 2;
-  
-  // Content specificity: 5 pts
-  if (signals.word_count >= 800 && signals.has_statistics) score += 3;
-  if (signals.has_quotes) score += 2;
+    // ── 3. Content Quality — healthcare (max 25) ──
+    // Shorter focused pages score well; long blog-style articles get less credit.
+    if (signals.word_count >= 800) score += 5;
+    else if (signals.word_count >= 400) score += 3;
+    else if (signals.word_count > 0) score += 1;
 
-  // ── 4. Credibility (max 15) ──
-  // Statistics: 5 pts
-  if (signals.stat_count >= 3) score += 5;
-  else if (signals.stat_count >= 1) score += 3;
-  
-  // Outbound citations: 5 pts
-  if (signals.citation_count >= 3) score += 5;
-  else if (signals.citation_count >= 1) score += 3;
-  
-  // Expert quotes: 5 pts
-  if (signals.has_quotes) score += 5;
+    if (signals.has_direct_answer) score += 5;
+    if (signals.has_tldr) score += 5;
 
-  // ── 5. AI-Specific Formatting (max 20) ──
-  // Semantic headings: 5 pts
-  if (signals.heading_count >= 4) score += 5;
-  else if (signals.heading_count >= 2) score += 3;
-  else if (signals.has_headings) score += 1;
-  
-  // Short paragraphs: 5 pts
-  if (signals.long_paragraphs === 0 && signals.paragraph_count > 0) score += 5;
-  else if (signals.long_paragraphs <= 2) score += 3;
-  
-  // Lists: 4 pts
-  if (signals.list_item_count >= 3) score += 4;
-  else if (signals.has_lists) score += 2;
+    if (signals.has_conversational_queries) score += 3;
+    if (signals.has_direct_answers) score += 2;
 
-  // FAQ block: 6 pts (was 3; redistributed from removed table check)
-  if (signals.has_faq) score += 6;
+    // Local intent and FAQ presence replace the stats+quotes content-quality bucket.
+    if (signals.has_local_intent_signals) score += 3;
+    if (signals.has_faq) score += 2;
+
+    // ── 4. Credibility — healthcare (max 15) ──
+    // Stat rewards are lower to discourage invented medical statistics.
+    if (signals.stat_count >= 3) score += 3;
+    else if (signals.stat_count >= 1) score += 2;
+
+    if (signals.citation_count >= 3) score += 5;
+    else if (signals.citation_count >= 1) score += 3;
+
+    if (signals.has_quotes) score += 5;
+    if (signals.has_disclaimer) score += 2;
+
+    // ── 5. AI-Specific Formatting — healthcare (max 20) ──
+    if (signals.heading_count >= 4) score += 5;
+    else if (signals.heading_count >= 2) score += 3;
+    else if (signals.has_headings) score += 1;
+
+    if (signals.long_paragraphs === 0 && signals.paragraph_count > 0) score += 5;
+    else if (signals.long_paragraphs <= 2) score += 3;
+
+    if (signals.list_item_count >= 3) score += 4;
+    else if (signals.has_lists) score += 2;
+
+    // FAQ block worth 8 pts (up from 6) — patient FAQ is the primary content format.
+    if (signals.has_faq) score += 8;
+  } else {
+    // ── 2. Structured Data & Schema — standard (max 20) ──
+    let pillar2 = 0;
+    if (signals.has_schema) pillar2 += 10;
+    if (signals.has_faq_schema) pillar2 += 5;
+    if (signals.has_org_schema) pillar2 += 5;
+    if (signals.has_nap_signals) pillar2 += 3;
+    if (signals.has_hours_signals) pillar2 += 2;
+    if (signals.has_booking_link) pillar2 += 2;
+    score += Math.min(20, pillar2);
+
+    // ── 3. Content Quality — standard (max 30) ──
+    if (signals.word_count >= 2000) score += 10;
+    else if (signals.word_count >= 1200) score += 7;
+    else if (signals.word_count >= 600) score += 4;
+    else if (signals.word_count > 0) score += 1;
+
+    if (signals.has_direct_answer) score += 5;
+    if (signals.has_tldr) score += 5;
+
+    if (signals.has_conversational_queries) score += 3;
+    if (signals.has_direct_answers) score += 2;
+
+    if (signals.word_count >= 800 && signals.has_statistics) score += 3;
+    if (signals.has_quotes) score += 2;
+
+    // ── 4. Credibility — standard (max 15) ──
+    if (signals.stat_count >= 3) score += 5;
+    else if (signals.stat_count >= 1) score += 3;
+
+    if (signals.citation_count >= 3) score += 5;
+    else if (signals.citation_count >= 1) score += 3;
+
+    if (signals.has_quotes) score += 5;
+
+    // ── 5. AI-Specific Formatting — standard (max 20) ──
+    if (signals.heading_count >= 4) score += 5;
+    else if (signals.heading_count >= 2) score += 3;
+    else if (signals.has_headings) score += 1;
+
+    if (signals.long_paragraphs === 0 && signals.paragraph_count > 0) score += 5;
+    else if (signals.long_paragraphs <= 2) score += 3;
+
+    if (signals.list_item_count >= 3) score += 4;
+    else if (signals.has_lists) score += 2;
+
+    if (signals.has_faq) score += 6;
+  }
 
   return Math.min(100, score);
 }
@@ -603,17 +799,32 @@ function generateJsonLd(title, content, siteUrl) {
 
 /**
  * Generates specific, actionable GEO recommendations based on the 5-pillar framework.
+ * Healthcare practice profiles receive patient-focused guidance.
  */
-function generateRecommendations(signals, brandRate, geoScore) {
+function generateRecommendations(signals, brandRate, geoScore, practiceProfile = null, layoutMap = null) {
+  const healthcare = isHealthcarePractice(practiceProfile);
   const recs = [];
 
-  // ── 1. Technical Crawlability ──
+  // ── Page builder notice (prepended so it is always the first recommendation) ──
+  if (layoutMap && layoutMap.content_edit_safe === false) {
+    const builderName = layoutMap.builder_detected || 'a page builder';
+    const builderLabel = builderName === 'page_builder' ? 'a page builder' : builderName.charAt(0).toUpperCase() + builderName.slice(1);
+    recs.push({
+      priority: 'info',
+      area: 'Page Builder Detected',
+      score: null,
+      maxScore: null,
+      message: `${builderLabel} detected. Gleo will apply schema and metadata fixes automatically. Content blocks (FAQ, depth, quotes) are appended safely at page end; in-place edits (formatting, readability) are shown as copy-paste suggestions to avoid breaking your layout.`,
+    });
+  }
+
+  // ── 1. Technical Crawlability (max 15) — same for all sites ──
   {
     let score = 0;
     if (!signals.has_meta_robots_block) score += 5;
     if (signals.alt_text_coverage >= 90 || signals.image_count === 0) score += 5;
     if (signals.has_llms_txt) score += 5;
-    
+
     if (score < 15) {
       const issues = [];
       if (signals.has_meta_robots_block) issues.push('Remove robots meta noindex/nofollow — AI bots need access');
@@ -629,7 +840,38 @@ function generateRecommendations(signals, brandRate, geoScore) {
   }
 
   // ── 2. Structured Data & Schema ──
-  {
+  if (healthcare) {
+    let score = 0;
+    if (signals.has_schema) score += 8;
+    if (signals.has_faq_schema) score += 7;
+    if (signals.has_org_schema) score += 4;
+    if (signals.has_healthcare_schema) score += 4;
+    if (signals.has_nap_signals) score += 3;
+    if (signals.has_hours_signals) score += 2;
+    if (signals.has_booking_link) score += 2;
+    if (signals.has_insurance_signals) score += 3;
+    if (signals.has_credentials_signals) score += 3;
+    score = Math.min(25, score);
+
+    if (score < 25) {
+      const issues = [];
+      if (!signals.has_schema) issues.push('Deploy JSON-LD schema so AI engines understand your practice');
+      if (!signals.has_healthcare_schema) issues.push('Add Dentist/Physician/MedicalClinic schema type so AI correctly categorizes your practice');
+      if (!signals.has_faq_schema) issues.push('Add FAQPage schema — patient FAQ is the primary content AI surfaces for medical queries');
+      if (!signals.has_org_schema) issues.push('Add LocalBusiness or MedicalOrganization schema');
+      if (!signals.has_nap_signals) issues.push('Add your practice name, address, and phone to this page');
+      if (!signals.has_hours_signals) issues.push('List office hours so patients find your schedule in AI results');
+      if (!signals.has_booking_link) issues.push('Add a booking link so AI can recommend scheduling an appointment');
+      if (!signals.has_insurance_signals) issues.push('List accepted insurance plans — patients routinely ask AI "do you accept my insurance?"');
+      if (!signals.has_credentials_signals) issues.push('Mention provider credentials (DDS, MD, board-certified) — builds patient trust in AI responses');
+      recs.push({
+        priority: !signals.has_schema ? 'critical' : 'medium',
+        area: 'Technical & Schema',
+        score, maxScore: 25,
+        message: issues.join('. ') + '.'
+      });
+    }
+  } else {
     let score = 0;
     if (signals.has_schema) score += 10;
     if (signals.has_faq_schema) score += 5;
@@ -657,7 +899,35 @@ function generateRecommendations(signals, brandRate, geoScore) {
   }
 
   // ── 3. Content Quality ──
-  {
+  if (healthcare) {
+    let score = 0;
+    if (signals.word_count >= 800) score += 5;
+    else if (signals.word_count >= 400) score += 3;
+    else if (signals.word_count > 0) score += 1;
+    if (signals.has_direct_answer) score += 5;
+    if (signals.has_tldr) score += 5;
+    if (signals.has_conversational_queries) score += 3;
+    if (signals.has_direct_answers) score += 2;
+    if (signals.has_local_intent_signals) score += 3;
+    if (signals.has_faq) score += 2;
+    score = Math.min(25, score);
+
+    if (score < 25) {
+      const issues = [];
+      if (signals.word_count < 400) issues.push(`Content is ${signals.word_count} words — add patient-facing detail (insurance, recovery, what to expect)`);
+      if (!signals.has_direct_answer) issues.push('Open with a clear 60-word answer to the patient\'s main question');
+      if (!signals.has_tldr) issues.push('Add an AI-readable summary of what this page covers');
+      if (!signals.has_conversational_queries) issues.push('Use natural patient language — "how much does," "do you accept," "is it painful"');
+      if (!signals.has_local_intent_signals) issues.push('Mention your city, neighborhood, or service area — local intent drives healthcare searches');
+      if (!signals.has_faq) issues.push('Add a patient FAQ section — it\'s the format AI prefers for medical queries');
+      recs.push({
+        priority: score <= 10 ? 'critical' : score <= 18 ? 'high' : 'medium',
+        area: 'Content Writing & Substance',
+        score, maxScore: 25,
+        message: issues.join('. ') + '.'
+      });
+    }
+  } else {
     let score = 0;
     if (signals.word_count >= 2000) score += 10;
     else if (signals.word_count >= 1200) score += 7;
@@ -670,7 +940,7 @@ function generateRecommendations(signals, brandRate, geoScore) {
     if (signals.word_count >= 800 && signals.has_statistics) score += 3;
     if (signals.has_quotes) score += 2;
     score = Math.min(30, score);
-    
+
     if (score < 30) {
       const issues = [];
       if (signals.word_count < 1200) issues.push(`Content is ${signals.word_count} words — aim for 1,200+ with depth`);
@@ -687,14 +957,36 @@ function generateRecommendations(signals, brandRate, geoScore) {
   }
 
   // ── 4. Credibility ──
-  {
+  if (healthcare) {
+    let score = 0;
+    if (signals.stat_count >= 3) score += 3;
+    else if (signals.stat_count >= 1) score += 2;
+    if (signals.citation_count >= 3) score += 5;
+    else if (signals.citation_count >= 1) score += 3;
+    if (signals.has_quotes) score += 5;
+    if (signals.has_disclaimer) score += 2;
+
+    if (score < 15) {
+      const issues = [];
+      if (signals.stat_count < 1) issues.push('Include practice-specific statistics (e.g. years in practice, procedures performed) — avoid invented or unverifiable claims');
+      if (signals.citation_count < 3) issues.push('Link to authoritative sources such as the ADA, AAP, or AAFP for clinical claims');
+      if (!signals.has_quotes) issues.push('Include a provider quote or verified patient testimonial');
+      if (!signals.has_disclaimer) issues.push('Add a brief disclaimer — e.g. "This is general information; consult your provider for personal guidance"');
+      recs.push({
+        priority: score <= 5 ? 'high' : 'medium',
+        area: 'Trust & Brand Signals',
+        score, maxScore: 15,
+        message: issues.join('. ') + '.'
+      });
+    }
+  } else {
     let score = 0;
     if (signals.stat_count >= 3) score += 5;
     else if (signals.stat_count >= 1) score += 3;
     if (signals.citation_count >= 3) score += 5;
     else if (signals.citation_count >= 1) score += 3;
     if (signals.has_quotes) score += 5;
-    
+
     if (score < 15) {
       const issues = [];
       if (signals.stat_count < 3) issues.push('Add unique first-party statistics — AI craves data it hasn\'t seen');
@@ -709,8 +1001,9 @@ function generateRecommendations(signals, brandRate, geoScore) {
     }
   }
 
-  // ── 5. AI-Specific Formatting ──
+  // ── 5. AI-Specific Formatting (max 20) — same structure, healthcare FAQ worth more ──
   {
+    const faqPts = healthcare ? 8 : 6;
     let score = 0;
     if (signals.heading_count >= 4) score += 5;
     else if (signals.heading_count >= 2) score += 3;
@@ -719,15 +1012,19 @@ function generateRecommendations(signals, brandRate, geoScore) {
     else if (signals.long_paragraphs <= 2) score += 3;
     if (signals.list_item_count >= 3) score += 4;
     else if (signals.has_lists) score += 2;
-    // FAQ block: 6 pts (redistributed from removed table check)
-    if (signals.has_faq) score += 6;
+    if (signals.has_faq) score += faqPts;
+    score = Math.min(20, score);
 
     if (score < 20) {
       const issues = [];
       if (signals.heading_count < 4) issues.push(`Only ${signals.heading_count} headings — add H2s every ~3 paragraphs`);
       if (signals.long_paragraphs > 0) issues.push(`${signals.long_paragraphs} paragraph(s) exceed 80 words — shorten them`);
       if (!signals.has_lists) issues.push('Convert dense paragraphs into bulleted lists');
-      if (!signals.has_faq) issues.push('Inject a contextual FAQ block near the end');
+      if (!signals.has_faq) {
+        issues.push(healthcare
+          ? 'Add a patient FAQ section — it\'s the format AI engines prefer for healthcare queries'
+          : 'Inject a contextual FAQ block near the end');
+      }
       recs.push({
         priority: score <= 8 ? 'high' : 'medium',
         area: 'Structure & Formatting',

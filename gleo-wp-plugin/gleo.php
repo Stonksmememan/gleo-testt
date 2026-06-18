@@ -412,6 +412,7 @@ function gleo_admin_scripts( $hook ) {
 			'posts'           => $posts_data,
 			'pages'           => $pages_data,
 			'nodeApiUrl'      => esc_url_raw( $node_api_url ),
+			'practiceProfile' => class_exists( 'Gleo_Practice_Profile' ) ? Gleo_Practice_Profile::get() : array(),
 		);
 
 		wp_localize_script( 'gleo-admin-app', 'gleoData', $gleo_data );

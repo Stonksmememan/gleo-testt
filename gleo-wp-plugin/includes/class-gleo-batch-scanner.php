@@ -169,11 +169,12 @@ class Gleo_Batch_Scanner {
 			$html_content = $api_client->sanitize_content( $post->post_content );
 		}
 
-		$payload['posts'][] = array(
-			'id'      => $post->ID,
-			'title'   => $post->post_title,
-			'content' => $html_content,
-		);
+	$payload['posts'][] = array(
+		'id'           => $post->ID,
+		'title'        => $post->post_title,
+		'content'      => $html_content,
+		'builder_meta' => $this->detect_builder_from_post_meta( $post->ID ),
+	);
 
 		$wpdb->replace(
 			$table_name,
@@ -273,9 +274,10 @@ class Gleo_Batch_Scanner {
 			}
 
 			$payload['posts'][] = array(
-				'id'      => $post->ID,
-				'title'   => $post->post_title,
-				'content' => $html_content, // Now sending the full HTML
+				'id'           => $post->ID,
+				'title'        => $post->post_title,
+				'content'      => $html_content, // Now sending the full HTML
+				'builder_meta' => $this->detect_builder_from_post_meta( $post->ID ),
 			);
 
 			// create/update db entry
@@ -372,6 +374,31 @@ class Gleo_Batch_Scanner {
 			'completed'   => $completed_count,
 			'results'     => $results,
 		) );
+	}
+
+	/**
+	 * Detect which page builder (if any) owns a post by checking authoritative post meta.
+	 * Returns a short slug ('elementor', 'divi', 'wpbakery', 'beaver') or '' when none is found.
+	 * This hint is forwarded to the Node analyzer so builder detection works even when
+	 * the rendered HTML is heavily cached or minified.
+	 *
+	 * @param int $post_id Post ID.
+	 * @return string
+	 */
+	private function detect_builder_from_post_meta( $post_id ) {
+		if ( get_post_meta( $post_id, '_elementor_edit_mode', true ) || get_post_meta( $post_id, '_elementor_data', true ) ) {
+			return 'elementor';
+		}
+		if ( get_post_meta( $post_id, '_et_pb_use_builder', true ) || get_post_meta( $post_id, '_et_pb_old_content', true ) ) {
+			return 'divi';
+		}
+		if ( get_post_meta( $post_id, '_wpb_vc_js_status', true ) ) {
+			return 'wpbakery';
+		}
+		if ( get_post_meta( $post_id, '_fl_builder_enabled', true ) || get_post_meta( $post_id, '_fl_builder_data', true ) ) {
+			return 'beaver';
+		}
+		return '';
 	}
 }
 
