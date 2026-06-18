@@ -540,8 +540,8 @@ function analyzeContentSignals(htmlContent, title, practiceProfile = null) {
     hasLocalIntentSignals = /\b(serving|patients\s+in|near\s+[a-z]+|located\s+in|our\s+[a-z]+\s+office|families\s+in)\b/i.test(cleanText);
   }
 
-  // Disclaimer: standard medical/dental disclaimer language
-  const hasDisclaimer = /not\s+(medical|dental)\s+advice|consult\s+(your\s+)?(doctor|dentist|physician|provider|healthcare)|for\s+informational\s+purposes|does\s+not\s+replace|individual\s+results\s+may\s+vary|speak\s+with\s+your\s+(provider|doctor|dentist)/i.test(cleanText);
+  // Disclaimer: standard medical/dental disclaimer language, including Gleo-injected phrases.
+  const hasDisclaimer = /not\s+a\s+substitute\s+for\s+professional\s+(medical|dental)\s+advice|not\s+(medical|dental)\s+advice|consult\s+(your\s+)?(doctor|dentist|physician|provider|healthcare)|for\s+informational\s+purposes|does\s+not\s+replace|individual\s+results\s+may\s+vary|speak\s+with\s+your\s+(provider|doctor|dentist)/i.test(cleanText);
 
   return {
     word_count: wordCount,

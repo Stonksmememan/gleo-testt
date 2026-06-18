@@ -1268,11 +1268,20 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
     const [designModal, setDesignModal]                       = useState(null); // { critique }
     const [visualEnhancementModal, setVisualEnhancementModal] = useState(null); // { plan }
     const [builderSuggestionModal, setBuilderSuggestionModal] = useState(null); // { fixType, builderName, suggestionHtml }
+    const [undoStatus, setUndoStatus] = useState({ canUndo: false, fixType: null, snapshotId: null });
+    const [isUndoing, setIsUndoing]   = useState(false);
     const OPTIMIZE_STEPS = 5;
 
     const siteUrl = typeof gleoData !== 'undefined' ? gleoData.siteUrl : '';
     const base = siteUrl ? siteUrl.replace( /\/$/, '' ) : '';
     const postUrl = previewUrl || ( base ? `${ base }/?p=${ post_id }&gleo_iframe=1` : '' );
+
+    // Fetch undo status on mount so the button reflects any snapshots from previous sessions.
+    useEffect(() => {
+        apiFetch({ path: `/gleo/v1/undo/status?post_id=${ post_id }` })
+            .then(res => setUndoStatus({ canUndo: !! res?.can_undo, fixType: res?.fix_type || null, snapshotId: res?.snapshot_id || null }))
+            .catch(() => {});
+    }, [ post_id ]); // eslint-disable-line react-hooks/exhaustive-deps
 
     if (!result) return null;
 
@@ -1577,6 +1586,9 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
                 if ( typeof res?.geo_score === 'number' && onReportUpdated ) {
                     onReportUpdated( post_id, { ...result, geo_score: res.geo_score } );
                 }
+                if ( res?.can_undo ) {
+                    setUndoStatus({ canUndo: true, fixType, snapshotId: res.snapshot_id || null });
+                }
                 const isBuilderAppend = result.layout_map?.content_edit_safe === false && FIX_SAFETY_TIERS.B.includes( fixType );
                 const successMsg = isBuilderAppend
                     ? ( config?.successMsg || `${ fixType } applied.` ) + ' Block appended at page end (builder-safe).'
@@ -1600,6 +1612,26 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
                 addToast( `Failed: ${ msg }` );
             })
             .finally(() => setApplyingTypes(p => ({ ...p, [fixType]: false })));
+    };
+
+    const doUndo = () => {
+        setIsUndoing(true);
+        apiFetch({ path: '/gleo/v1/undo', method: 'POST', data: { post_id } })
+            .then(res => {
+                const restoredLabel = FIX_CONFIG[ res?.fix_type ]?.label || res?.fix_type || 'last fix';
+                addToast( `Undid: ${ restoredLabel }. Content restored.` );
+                if ( res?.fix_type ) {
+                    setAppliedTypes( p => { const n = { ...p }; delete n[ res.fix_type ]; return n; } );
+                }
+                if ( typeof res?.geo_score === 'number' && onReportUpdated ) {
+                    onReportUpdated( post_id, { ...result, geo_score: res.geo_score } );
+                }
+                setUndoStatus({ canUndo: !! res?.can_undo, fixType: null, snapshotId: null });
+            })
+            .catch(err => {
+                addToast( err?.message || 'Undo failed.' );
+            })
+            .finally(() => setIsUndoing(false));
     };
 
     /**
@@ -1952,6 +1984,14 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
                         onClick={ handleApplyAll } disabled={ allAutoFixed || isApplyingAll || ( optimizeOpen && ! optimizeDone ) }>
                         { isApplyingAll ? 'Applying…' : 'Apply fixes only' }
                     </button>
+                    { undoStatus.canUndo && (
+                        <button type="button" className="gleo-btn gleo-btn-outline" style={{ fontSize: 12 }}
+                            onClick={ doUndo }
+                            disabled={ isUndoing || isApplyingAll || ( optimizeOpen && ! optimizeDone ) }
+                            title={ `Undo: ${ FIX_CONFIG[ undoStatus.fixType ]?.label || undoStatus.fixType || 'last fix' }` }>
+                            { isUndoing ? 'Undoing…' : `↩ Undo ${ FIX_CONFIG[ undoStatus.fixType ]?.label || undoStatus.fixType || 'last fix' }` }
+                        </button>
+                    ) }
                 </div>
                 <p className="gleo-workflow-hint">
                     Fixes that need your input (statistics, sources) stay one click each below. FAQ fix opens a placement picker.

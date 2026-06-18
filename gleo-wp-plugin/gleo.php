@@ -17,15 +17,23 @@ if ( ! defined( 'ABSPATH' ) ) {
 define( 'GLEO_VERSION', '1.0.0' );
 define( 'GLEO_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 define( 'GLEO_PLUGIN_URL', plugin_dir_url( __FILE__ ) );
+define( 'GLEO_DB_VERSION', '1.1' );
 
 // Activation hook
 register_activation_hook( __FILE__, 'gleo_activate' );
 function gleo_activate() {
+	gleo_run_db_migrations();
+}
+
+/**
+ * Run all database migrations idempotently via dbDelta.
+ * Called on activation and on plugins_loaded when GLEO_DB_VERSION has changed.
+ */
+function gleo_run_db_migrations() {
 	global $wpdb;
 	$charset_collate = $wpdb->get_charset_collate();
-	$table_name = $wpdb->prefix . 'gleo_scans';
 
-	$sql = "CREATE TABLE $table_name (
+	$sql = "CREATE TABLE {$wpdb->prefix}gleo_scans (
 		id bigint(20) NOT NULL AUTO_INCREMENT,
 		post_id bigint(20) NOT NULL,
 		scan_status varchar(50) NOT NULL,
@@ -35,9 +43,7 @@ function gleo_activate() {
 		PRIMARY KEY  (id)
 	) $charset_collate;";
 
-	// History table for analytics over time
-	$history_table = $wpdb->prefix . 'gleo_scan_history';
-	$sql .= "CREATE TABLE $history_table (
+	$sql .= "CREATE TABLE {$wpdb->prefix}gleo_scan_history (
 		id bigint(20) NOT NULL AUTO_INCREMENT,
 		post_id bigint(20) NOT NULL,
 		geo_score int(3) DEFAULT 0,
@@ -48,8 +54,33 @@ function gleo_activate() {
 		KEY scanned_at (scanned_at)
 	) $charset_collate;";
 
+	// Phase 5: pre-fix snapshots for undo/rollback
+	$sql .= "CREATE TABLE {$wpdb->prefix}gleo_fix_snapshots (
+		id bigint(20) NOT NULL AUTO_INCREMENT,
+		post_id bigint(20) NOT NULL,
+		fix_type varchar(50) NOT NULL,
+		snapshot_json longtext NOT NULL,
+		user_id bigint(20) DEFAULT 0,
+		created_at datetime DEFAULT CURRENT_TIMESTAMP,
+		PRIMARY KEY  (id),
+		KEY post_id (post_id),
+		KEY created_at (created_at)
+	) $charset_collate;";
+
 	require_once ABSPATH . 'wp-admin/includes/upgrade.php';
 	dbDelta( $sql );
+
+	update_option( 'gleo_db_version', GLEO_DB_VERSION );
+}
+
+/**
+ * Upgrade database tables for existing installs when GLEO_DB_VERSION changes.
+ */
+add_action( 'plugins_loaded', 'gleo_maybe_upgrade_db' );
+function gleo_maybe_upgrade_db() {
+	if ( get_option( 'gleo_db_version' ) !== GLEO_DB_VERSION ) {
+		gleo_run_db_migrations();
+	}
 }
 
 // Register settings

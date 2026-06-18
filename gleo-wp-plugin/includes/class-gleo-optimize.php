@@ -353,6 +353,32 @@ class Gleo_Optimize {
 		$hero_html = $fig_open . $img_tag . $caption_html . '</figure>';
 		$hero_block = "<!-- wp:image {$block_attrs} -->\n{$hero_html}\n<!-- /wp:image -->";
 
+		// Phase 5: snapshot original post_content before hero injection so it can be undone.
+		global $wpdb;
+		$snap_table = $wpdb->prefix . 'gleo_fix_snapshots';
+		if ( $wpdb->get_var( $wpdb->prepare( "SHOW TABLES LIKE %s", $snap_table ) ) === $snap_table ) {
+			$wpdb->insert(
+				$snap_table,
+				array(
+					'post_id'       => $post->ID,
+					'fix_type'      => 'appearance_hero',
+					'snapshot_json' => wp_json_encode( array( 'post_content' => $post->post_content ) ),
+					'user_id'       => get_current_user_id(),
+					'created_at'    => current_time( 'mysql', true ),
+				),
+				array( '%d', '%s', '%s', '%d', '%s' )
+			);
+			// Prune snapshots older than the 5 most recent for this post.
+			$old_ids = $wpdb->get_col( $wpdb->prepare(
+				"SELECT id FROM {$snap_table} WHERE post_id = %d ORDER BY id DESC LIMIT 5, 999",
+				$post->ID
+			) );
+			if ( ! empty( $old_ids ) ) {
+				$placeholders = implode( ',', array_fill( 0, count( $old_ids ), '%d' ) );
+				$wpdb->query( $wpdb->prepare( "DELETE FROM {$snap_table} WHERE id IN ($placeholders)", ...$old_ids ) ); // phpcs:ignore WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare
+			}
+		}
+
 		// Prepend above the first paragraph / heading.
 		$updated_content = $hero_block . "\n\n" . $post->post_content;
 		$updated = wp_update_post( array( 'ID' => $post->ID, 'post_content' => $updated_content ), true );

@@ -1392,6 +1392,23 @@ CSS;
 				return current_user_can( 'manage_options' );
 			},
 		) );
+
+		// ── Phase 5: Undo / rollback ─────────────────────────────────────────────
+		register_rest_route( 'gleo/v1', '/undo', array(
+			'methods'             => 'POST',
+			'callback'            => array( $this, 'handle_undo' ),
+			'permission_callback' => function() {
+				return current_user_can( 'manage_options' );
+			},
+		) );
+
+		register_rest_route( 'gleo/v1', '/undo/status', array(
+			'methods'             => 'GET',
+			'callback'            => array( $this, 'handle_undo_status' ),
+			'permission_callback' => function() {
+				return current_user_can( 'manage_options' );
+			},
+		) );
 	}
 
 	/**
@@ -1914,6 +1931,30 @@ CSS;
 		}
 		$blocks[ sanitize_key( $type ) ] = $block_html;
 		update_post_meta( $post_id, '_gleo_builder_blocks', $blocks );
+	}
+
+	/**
+	 * Build the YMYL/healthcare disclaimer HTML for FAQ blocks.
+	 *
+	 * Returns non-empty HTML only for healthcare practice types; empty string for all others.
+	 * The disclaimer text is tailored per practice type.
+	 *
+	 * @param string $practice_type Practice type slug (e.g. 'dentist', 'physician').
+	 * @return string Disclaimer HTML or empty string.
+	 */
+	private function gleo_build_faq_disclaimer_html( $practice_type ) {
+		$type = strtolower( (string) $practice_type );
+		if ( 'dentist' === $type ) {
+			return '<p class="gleo-faq-disclaimer" style="font-size:0.85em;color:#555;margin-top:12px;">'
+				. esc_html__( 'This information is general and not a substitute for professional dental advice. Contact the practice for guidance about your dental health situation.', 'gleo' )
+				. '</p>';
+		}
+		if ( in_array( $type, array( 'physician', 'medical_clinic' ), true ) ) {
+			return '<p class="gleo-faq-disclaimer" style="font-size:0.85em;color:#555;margin-top:12px;">'
+				. esc_html__( 'This information is general and not a substitute for professional medical advice. Contact the practice for guidance about your situation.', 'gleo' )
+				. '</p>';
+		}
+		return '';
 	}
 
 	/**
@@ -2640,12 +2681,17 @@ CSS;
 			case 'readability':
 				$cs['long_paragraphs'] = 0;
 				break;
-		case 'faq':
-		case 'answer_readiness':
-			$cs['has_faq']            = true;
-			$cs['has_direct_answers'] = true;
-			$cs['has_disclaimer']     = true;
-			break;
+	case 'faq':
+	case 'answer_readiness':
+		$cs['has_faq']            = true;
+		$cs['has_direct_answers'] = true;
+		// Only bump has_disclaimer when a disclaimer was actually injected (healthcare sites).
+		$_bump_profile = class_exists( 'Gleo_Practice_Profile' ) ? Gleo_Practice_Profile::get() : array();
+		$_bump_type    = isset( $_bump_profile['practice_type'] ) ? strtolower( $_bump_profile['practice_type'] ) : '';
+		if ( '' !== $this->gleo_build_faq_disclaimer_html( $_bump_type ) ) {
+			$cs['has_disclaimer'] = true;
+		}
+		break;
 			// data_tables removed — comparison tables are no longer generated
 			case 'content_depth':
 				$cs['word_count'] = max( (int) ( $cs['word_count'] ?? 0 ), 1200 );
@@ -3091,6 +3137,281 @@ CSS;
 		Gleo_Schema::enrich_scan_json_ld( $post_id, $post );
 	}
 
+	// ── Phase 5: Snapshot helpers ────────────────────────────────────────────────
+
+	/**
+	 * Capture a pre-fix snapshot of post content, meta, options, and scan result.
+	 *
+	 * @param int    $post_id  Post ID.
+	 * @param string $fix_type Fix type being applied.
+	 * @param array  $extra    Optional extra values to include (e.g. attachment_alts).
+	 * @return int|false Snapshot row ID on success, false on failure.
+	 */
+	private function gleo_capture_fix_snapshot( $post_id, $fix_type, $extra = array() ) {
+		global $wpdb;
+
+		$post = get_post( $post_id );
+		if ( ! $post ) {
+			return false;
+		}
+
+		$meta_keys = array(
+			'_gleo_builder_blocks',
+			'_gleo_ai_overview',
+			'_gleo_schema_override',
+			'_gleo_faq_placement',
+			'_gleo_faq_placement_anchor',
+		);
+		$post_meta = array();
+		foreach ( $meta_keys as $key ) {
+			$post_meta[ $key ] = get_post_meta( $post_id, $key, true );
+		}
+
+		$scan_result_raw = $wpdb->get_var( $wpdb->prepare(
+			"SELECT scan_result FROM {$wpdb->prefix}gleo_scans WHERE post_id = %d AND scan_status = 'completed' LIMIT 1",
+			$post_id
+		) );
+
+		$payload = array(
+			'post_content' => $post->post_content,
+			'post_meta'    => $post_meta,
+			'options'      => array(
+				'gleo_robots_allow_ai_crawlers' => get_option( 'gleo_robots_allow_ai_crawlers' ),
+			),
+			'scan_result'  => $scan_result_raw,
+		);
+
+		// For image_alt_text fixes, capture current alt texts so they can be restored.
+		if ( 'image_alt_text' === $fix_type ) {
+			preg_match_all( '/<!-- wp:image ({.*?}) \/-->/s', $post->post_content, $img_m );
+			$alts = array();
+			foreach ( $img_m[1] as $json_str ) {
+				$img_data = json_decode( $json_str, true );
+				if ( ! empty( $img_data['id'] ) ) {
+					$att_id         = (int) $img_data['id'];
+					$alts[ $att_id ] = (string) get_post_meta( $att_id, '_wp_attachment_image_alt', true );
+				}
+			}
+			if ( ! empty( $alts ) ) {
+				$payload['attachment_alts'] = $alts;
+			}
+		} elseif ( ! empty( $extra['attachment_alts'] ) ) {
+			$payload['attachment_alts'] = $extra['attachment_alts'];
+		}
+
+		$inserted = $wpdb->insert(
+			$wpdb->prefix . 'gleo_fix_snapshots',
+			array(
+				'post_id'       => $post_id,
+				'fix_type'      => sanitize_key( $fix_type ),
+				'snapshot_json' => wp_json_encode( $payload ),
+				'user_id'       => get_current_user_id(),
+				'created_at'    => current_time( 'mysql', true ),
+			),
+			array( '%d', '%s', '%s', '%d', '%s' )
+		);
+
+		if ( ! $inserted ) {
+			return false;
+		}
+
+		$snapshot_id = (int) $wpdb->insert_id;
+		$this->gleo_prune_old_snapshots( $post_id );
+		return $snapshot_id;
+	}
+
+	/**
+	 * Keep only the most recent $keep snapshots for a post; delete the rest.
+	 *
+	 * @param int $post_id Post ID.
+	 * @param int $keep    Number of snapshots to retain. Default 5.
+	 */
+	private function gleo_prune_old_snapshots( $post_id, $keep = 5 ) {
+		global $wpdb;
+
+		$table = $wpdb->prefix . 'gleo_fix_snapshots';
+		$ids   = $wpdb->get_col( $wpdb->prepare(
+			"SELECT id FROM {$table} WHERE post_id = %d ORDER BY id DESC LIMIT %d, 999",
+			$post_id,
+			$keep
+		) );
+
+		if ( ! empty( $ids ) ) {
+			$placeholders = implode( ',', array_fill( 0, count( $ids ), '%d' ) );
+			$wpdb->query( $wpdb->prepare( "DELETE FROM {$table} WHERE id IN ($placeholders)", ...$ids ) ); // phpcs:ignore WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare
+		}
+	}
+
+	/**
+	 * Get the most recent snapshot row for a post.
+	 *
+	 * @param int $post_id Post ID.
+	 * @return object|null Row with id, fix_type, snapshot_json, created_at — or null.
+	 */
+	private function gleo_get_latest_snapshot( $post_id ) {
+		global $wpdb;
+		return $wpdb->get_row( $wpdb->prepare(
+			"SELECT id, fix_type, snapshot_json, created_at FROM {$wpdb->prefix}gleo_fix_snapshots WHERE post_id = %d ORDER BY id DESC LIMIT 1",
+			$post_id
+		) );
+	}
+
+	/**
+	 * Restore a snapshot by its row ID and delete it afterwards.
+	 *
+	 * @param int $snapshot_id Snapshot row ID.
+	 * @return array|WP_Error Restored data array on success, WP_Error on failure.
+	 */
+	private function gleo_restore_snapshot( $snapshot_id ) {
+		global $wpdb;
+
+		$row = $wpdb->get_row( $wpdb->prepare(
+			"SELECT * FROM {$wpdb->prefix}gleo_fix_snapshots WHERE id = %d LIMIT 1",
+			$snapshot_id
+		) );
+
+		if ( ! $row ) {
+			return new WP_Error( 'snapshot_not_found', __( 'Snapshot not found.', 'gleo' ), array( 'status' => 404 ) );
+		}
+
+		$payload = json_decode( $row->snapshot_json, true );
+		if ( ! is_array( $payload ) ) {
+			return new WP_Error( 'snapshot_corrupt', __( 'Snapshot data is unreadable.', 'gleo' ), array( 'status' => 500 ) );
+		}
+
+		$post_id = (int) $row->post_id;
+
+		// 1. Restore post_content if it differs from current.
+		if ( isset( $payload['post_content'] ) ) {
+			$current = get_post_field( 'post_content', $post_id, 'raw' );
+			if ( $current !== $payload['post_content'] ) {
+				$updated = wp_update_post( array( 'ID' => $post_id, 'post_content' => $payload['post_content'] ), true );
+				if ( is_wp_error( $updated ) ) {
+					return $updated;
+				}
+			}
+		}
+
+		// 2. Restore / delete post meta.
+		if ( ! empty( $payload['post_meta'] ) && is_array( $payload['post_meta'] ) ) {
+			foreach ( $payload['post_meta'] as $key => $value ) {
+				if ( '' === $value || null === $value || false === $value || array() === $value ) {
+					delete_post_meta( $post_id, $key );
+				} else {
+					update_post_meta( $post_id, $key, $value );
+				}
+			}
+		}
+
+		// 3. Restore options.
+		if ( ! empty( $payload['options'] ) && is_array( $payload['options'] ) ) {
+			foreach ( $payload['options'] as $option_name => $option_value ) {
+				if ( false === $option_value || null === $option_value ) {
+					delete_option( $option_name );
+				} else {
+					update_option( $option_name, $option_value, false );
+				}
+			}
+		}
+
+		// 4. Restore attachment alt texts.
+		if ( ! empty( $payload['attachment_alts'] ) && is_array( $payload['attachment_alts'] ) ) {
+			foreach ( $payload['attachment_alts'] as $att_id => $alt ) {
+				update_post_meta( (int) $att_id, '_wp_attachment_image_alt', $alt );
+			}
+		}
+
+		// 5. Restore scan result.
+		$geo_score = null;
+		if ( ! empty( $payload['scan_result'] ) ) {
+			$wpdb->update(
+				$wpdb->prefix . 'gleo_scans',
+				array( 'scan_result' => $payload['scan_result'] ),
+				array( 'post_id' => $post_id ),
+				array( '%s' ),
+				array( '%d' )
+			);
+			$restored_data = json_decode( $payload['scan_result'], true );
+			if ( isset( $restored_data['geo_score'] ) ) {
+				$geo_score = (int) $restored_data['geo_score'];
+			}
+		}
+
+		// 6. Clear caches.
+		clean_post_cache( $post_id );
+
+		// 7. Delete the consumed snapshot row (LIFO stack).
+		$wpdb->delete( $wpdb->prefix . 'gleo_fix_snapshots', array( 'id' => $snapshot_id ), array( '%d' ) );
+
+		return array(
+			'post_id'     => $post_id,
+			'fix_type'    => $row->fix_type,
+			'snapshot_id' => $snapshot_id,
+			'geo_score'   => $geo_score,
+		);
+	}
+
+	/**
+	 * REST handler: POST /gleo/v1/undo — restore the most recent fix snapshot for a post.
+	 *
+	 * @param WP_REST_Request $request Request object.
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public function handle_undo( $request ) {
+		$params  = $request->get_json_params();
+		$post_id = isset( $params['post_id'] ) ? (int) $params['post_id'] : 0;
+
+		if ( ! $post_id ) {
+			return new WP_Error( 'invalid_data', 'Missing post_id.', array( 'status' => 400 ) );
+		}
+
+		$snapshot = $this->gleo_get_latest_snapshot( $post_id );
+		if ( ! $snapshot ) {
+			return new WP_Error( 'nothing_to_undo', __( 'No fix snapshot found for this post.', 'gleo' ), array( 'status' => 404 ) );
+		}
+
+		$result = $this->gleo_restore_snapshot( (int) $snapshot->id );
+		if ( is_wp_error( $result ) ) {
+			return $result;
+		}
+
+		// Check if another snapshot remains after this restore.
+		$next = $this->gleo_get_latest_snapshot( $post_id );
+
+		return rest_ensure_response( array_merge(
+			$result,
+			array(
+				'success'  => true,
+				'can_undo' => ! empty( $next ),
+			)
+		) );
+	}
+
+	/**
+	 * REST handler: GET /gleo/v1/undo/status — check whether undo is available for a post.
+	 *
+	 * @param WP_REST_Request $request Request object.
+	 * @return WP_REST_Response|WP_Error
+	 */
+	public function handle_undo_status( $request ) {
+		$post_id = (int) $request->get_param( 'post_id' );
+
+		if ( ! $post_id ) {
+			return new WP_Error( 'invalid_data', 'Missing post_id.', array( 'status' => 400 ) );
+		}
+
+		$snapshot = $this->gleo_get_latest_snapshot( $post_id );
+
+		return rest_ensure_response( array(
+			'can_undo'    => ! empty( $snapshot ),
+			'fix_type'    => $snapshot ? $snapshot->fix_type : null,
+			'snapshot_id' => $snapshot ? (int) $snapshot->id : null,
+			'created_at'  => $snapshot ? $snapshot->created_at : null,
+		) );
+	}
+
+	// ── End Phase 5 snapshot helpers ─────────────────────────────────────────────
+
 	public function handle_apply( $request ) {
 		$params     = $request->get_json_params();
 		$post_id    = isset( $params['post_id'] ) ? (int) $params['post_id'] : 0;
@@ -3204,6 +3525,9 @@ CSS;
 		}
 		$use_builder_meta = $use_builder_meta ?? false;
 		// ── End builder safety gate ───────────────────────────────────────────────
+
+		// ── Phase 5: Capture pre-fix snapshot (capture-before, delete-on-failure) ─
+		$snapshot_id = $this->gleo_capture_fix_snapshot( $post_id, $type );
 
 		switch ( $type ) {
 
@@ -3384,15 +3708,10 @@ CSS;
 			$faq_pairs_for_schema = array_slice( $pairs, 0, 5 );
 			$faq_title = __( 'Frequently Asked Questions', 'gleo' );
 
-			// Healthcare disclaimer — appended inside the FAQ block for YMYL safety.
-			$disclaimer_html = '';
-			$hc_profile       = class_exists( 'Gleo_Practice_Profile' ) ? Gleo_Practice_Profile::get() : array();
-			$hc_type          = isset( $hc_profile['practice_type'] ) ? strtolower( $hc_profile['practice_type'] ) : '';
-			if ( in_array( $hc_type, array( 'dentist', 'physician', 'medical_clinic' ), true ) ) {
-				$disclaimer_html = '<p class="gleo-faq-disclaimer" style="font-size:0.85em;color:#555;margin-top:12px;">'
-					. esc_html__( 'This information is general and not a substitute for professional medical advice. Contact the practice for guidance about your situation.', 'gleo' )
-					. '</p>';
-			}
+			// Healthcare YMYL disclaimer — appended inside the FAQ block only for healthcare practices.
+			$hc_profile      = class_exists( 'Gleo_Practice_Profile' ) ? Gleo_Practice_Profile::get() : array();
+			$hc_type         = isset( $hc_profile['practice_type'] ) ? strtolower( $hc_profile['practice_type'] ) : '';
+			$disclaimer_html = $this->gleo_build_faq_disclaimer_html( $hc_type );
 
 			$faq_inner = '<div class="gleo-faq-wrap"><h2 class="wp-block-heading">' . esc_html( $faq_title ) . '</h2>'
 				. '<div class="gleo-faq-accordion">' . $items_html . '</div>'
@@ -3529,6 +3848,10 @@ CSS;
 
 
 			default:
+				// Unknown type — discard the orphaned snapshot then report error.
+				if ( $snapshot_id ) {
+					$wpdb->delete( $wpdb->prefix . 'gleo_fix_snapshots', array( 'id' => $snapshot_id ), array( '%d' ) );
+				}
 				return new WP_Error( 'unknown_type', 'Unknown fix type: ' . $type, array( 'status' => 400 ) );
 		}
 
@@ -3543,9 +3866,15 @@ CSS;
 				true
 			);
 			if ( is_wp_error( $updated ) ) {
+				if ( $snapshot_id ) {
+					$wpdb->delete( $wpdb->prefix . 'gleo_fix_snapshots', array( 'id' => $snapshot_id ), array( '%d' ) );
+				}
 				return new WP_Error( 'update_failed', $updated->get_error_message(), array( 'status' => 500 ) );
 			}
 			if ( 0 === (int) $updated ) {
+				if ( $snapshot_id ) {
+					$wpdb->delete( $wpdb->prefix . 'gleo_fix_snapshots', array( 'id' => $snapshot_id ), array( '%d' ) );
+				}
 				return new WP_Error( 'update_failed', __( 'WordPress could not save the updated post content.', 'gleo' ), array( 'status' => 500 ) );
 			}
 			clean_post_cache( $post_id );
@@ -3621,11 +3950,13 @@ CSS;
 		}
 
 		return rest_ensure_response( array(
-			'success'    => true,
-			'post_id'    => $post_id,
-			'type'       => $type,
-			'modified'   => $modified,
-			'geo_score'  => $geo_score_out,
+			'success'     => true,
+			'post_id'     => $post_id,
+			'type'        => $type,
+			'modified'    => $modified,
+			'geo_score'   => $geo_score_out,
+			'snapshot_id' => $snapshot_id ?: null,
+			'can_undo'    => ! empty( $snapshot_id ),
 		) );
 	}
 }
