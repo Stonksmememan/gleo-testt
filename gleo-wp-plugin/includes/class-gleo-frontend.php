@@ -1974,7 +1974,7 @@ CSS;
 			return $content;
 		}
 		// Render in stable order: FAQ first, then depth, then social proof blocks.
-		$order  = array( 'faq', 'answer_readiness', 'content_depth', 'expert_quotes', 'authority', 'credibility' );
+		$order  = array( 'faq', 'answer_readiness', 'content_depth', 'authority', 'credibility' );
 		$append = '';
 		foreach ( $order as $key ) {
 			if ( isset( $blocks[ $key ] ) && is_string( $blocks[ $key ] ) && '' !== trim( $blocks[ $key ] ) ) {
@@ -2489,7 +2489,12 @@ CSS;
 		$good = array();
 		foreach ( $pairs as $pair ) {
 			$q = isset( $pair['q'] ) ? trim( (string) $pair['q'] ) : '';
+			$a = isset( $pair['a'] ) ? trim( (string) $pair['a'] ) : '';
 			if ( '' === $q || ! preg_match( '/\?\s*$/', $q ) ) {
+				continue;
+			}
+			// Drop any pair whose answer is an old placeholder string.
+			if ( '' === $a || false !== stripos( $a, 'see the article above' ) ) {
 				continue;
 			}
 			// Reject questions that are too long to be real searches (likely sentences).
@@ -3454,14 +3459,16 @@ CSS;
 		$modified        = false;
 		$authority_has_numeric_stat = false;
 		$faq_pairs_for_schema       = array();
-		$geo_score_out   = null;
+		$geo_score_out        = null;
+		$content_signals_out  = null;
+		$applied_fix_types    = array();
 
 		// ── Phase 4: Page Builder Safety ─────────────────────────────────────────
 		// Tier A (meta/head): always apply normally — no post_content involved.
 		// Tier B (append blocks): store in meta, render via the_content filter.
 		// Tier C (in-place edits): block mutation; return suggestion payload.
-		static $GLEO_FIX_TIER_A = array( 'schema', 'schema_enrich', 'opening_summary', 'robots_txt_allow', 'image_alt_text', 'visual_enhancement', 'structure' );
-		static $GLEO_FIX_TIER_B = array( 'faq', 'answer_readiness', 'content_depth', 'expert_quotes', 'authority', 'credibility' );
+		static $GLEO_FIX_TIER_A = array( 'schema', 'schema_enrich', 'opening_summary', 'robots_txt_allow', 'image_alt_text', 'structure' );
+		static $GLEO_FIX_TIER_B = array( 'faq', 'answer_readiness', 'content_depth', 'authority', 'credibility' );
 		static $GLEO_FIX_TIER_C = array( 'formatting', 'readability' );
 
 		$builder        = $this->gleo_detect_page_builder( $post_id, $content, $layout_map );
@@ -3546,10 +3553,13 @@ CSS;
 
 			case 'opening_summary':
 				$content = $this->gleo_strip_key_takeaways_block( $content );
-				$content = $this->gleo_strip_opening_summary_block( $content );
-				$brief   = $this->gleo_opening_in_brief_text( $post, $contextual_assets );
+				$stripped = $this->gleo_strip_opening_summary_block( $content );
+				if ( $stripped !== $content ) {
+					$content  = $stripped;
+					$modified = true;
+				}
+				$brief = $this->gleo_opening_in_brief_text( $post, $contextual_assets );
 				update_post_meta( $post_id, '_gleo_ai_overview', $brief );
-				$modified = true;
 				break;
 
 			case 'image_alt_text':
@@ -3617,15 +3627,15 @@ CSS;
 
 			case 'formatting':
 				// Convert the first long paragraph (>50 words) that doesn't contain a list into a bullet list
-				$content = preg_replace_callback(
+				$formatting_before = $content;
+				$content           = preg_replace_callback(
 					'/<p>([^<]{200,})<\/p>/i',
 					function( $matches ) {
-						static $converted = false;
-						if ( $converted ) return $matches[0];
-						$text = $matches[1];
+						$text      = $matches[1];
 						$sentences = preg_split( '/(?<=[.!?])\s+/', trim( $text ) );
-						if ( count( $sentences ) < 2 ) return $matches[0];
-						$converted = true;
+						if ( count( $sentences ) < 2 ) {
+							return $matches[0];
+						}
 						$items = '';
 						foreach ( $sentences as $s ) {
 							$s = trim( $s );
@@ -3638,25 +3648,32 @@ CSS;
 					$content,
 					1
 				);
-				$modified = true;
+				if ( $content !== $formatting_before ) {
+					$modified = true;
+				}
 				break;
 
 			case 'readability':
 				// Split paragraphs longer than 80 words into two
-				$content = preg_replace_callback(
+				$readability_before = $content;
+				$content            = preg_replace_callback(
 					'/<p>(.*?)<\/p>/is',
 					function( $matches ) {
-						$text = $matches[1];
+						$text  = $matches[1];
 						$words = preg_split( '/\s+/', trim( $text ) );
-						if ( count( $words ) <= 80 ) return $matches[0];
-						$mid = (int) ceil( count( $words ) / 2 );
-						$first = implode( ' ', array_slice( $words, 0, $mid ) );
+						if ( count( $words ) <= 80 ) {
+							return $matches[0];
+						}
+						$mid    = (int) ceil( count( $words ) / 2 );
+						$first  = implode( ' ', array_slice( $words, 0, $mid ) );
 						$second = implode( ' ', array_slice( $words, $mid ) );
 						return "<p>{$first}</p>\n\n<p>{$second}</p>";
 					},
 					$content
 				);
-				$modified = true;
+				if ( $content !== $readability_before ) {
+					$modified = true;
+				}
 				break;
 
 			case 'faq':
@@ -3677,16 +3694,32 @@ CSS;
 					}
 				}
 
-				// Then add FAQ pairs from contextual_assets
-				if ( ! empty( $contextual_assets['faq_html'] ) ) {
-					preg_match_all( '/<h3[^>]*>(.*?)<\/h3>\s*(?:<p[^>]*>(.*?)<\/p>)?/si', $contextual_assets['faq_html'], $fm );
-					foreach ( $fm[1] as $idx => $q ) {
-						$pairs[] = array(
-							'q' => wp_strip_all_tags( $q ),
-							'a' => ! empty( $fm[2][ $idx ] ) ? wp_strip_all_tags( $fm[2][ $idx ] ) : 'See the article above for details.',
-						);
+			// Then add FAQ pairs from contextual_assets.
+			// When the AI produced a question but no answer, extract a relevant sentence from the
+			// post content rather than injecting a generic placeholder.
+			if ( ! empty( $contextual_assets['faq_html'] ) ) {
+				preg_match_all( '/<h3[^>]*>(.*?)<\/h3>\s*(?:<p[^>]*>(.*?)<\/p>)?/si', $contextual_assets['faq_html'], $fm );
+				foreach ( $fm[1] as $idx => $q ) {
+					$question = wp_strip_all_tags( $q );
+					if ( ! empty( $fm[2][ $idx ] ) ) {
+						$answer = wp_strip_all_tags( $fm[2][ $idx ] );
+					} else {
+						// Derive keywords from the question and try to find a matching sentence in the post.
+						$kw_raw  = preg_replace( '/\b(how|what|when|where|why|who|is|are|do|does|can|will|should|the|a|an|of|for|in|to|and|or)\b/i', ' ', $question );
+						$kws     = array_values( array_filter( array_map( 'trim', preg_split( '/\s+/', strtolower( $kw_raw ) ) ) ) );
+						$kws     = array_slice( $kws, 0, 5 );
+						$answer  = ! empty( $kws ) ? $this->gleo_faq_answer_from_content( $post, $kws, '' ) : '';
 					}
+					// Skip this pair if no real answer could be found — avoid empty or placeholder answers.
+					if ( '' === $answer ) {
+						continue;
+					}
+					$pairs[] = array(
+						'q' => $question,
+						'a' => $answer,
+					);
 				}
+			}
 
 				if ( ! empty( $pairs ) ) {
 					$pairs = $this->gleo_filter_practical_faq_pairs( $pairs );
@@ -3752,14 +3785,7 @@ CSS;
 				}
 				break;
 
-		case 'visual_enhancement':
-			// Trigger a full appearance analysis + open the modal on the frontend.
-			// The actual CSS/image changes go through /gleo/v1/appearance/apply;
-			// this case simply marks the type as "applied" so the report card updates.
-			// No post_content modification needed here.
-			break;
-
-		case 'data_tables':
+	case 'data_tables':
 			// Comparison tables removed — return graceful no-op instead of error.
 			return new WP_Error( 'removed_fix', 'Comparison table generation has been removed.', array( 'status' => 400 ) );
 
@@ -3939,9 +3965,17 @@ CSS;
 			}
 			$cs = &$result_data['content_signals'];
 			$this->gleo_bump_signals_after_fix( $cs, $type, $post, $authority_has_numeric_stat );
+			if ( ! isset( $result_data['applied_fix_types'] ) || ! is_array( $result_data['applied_fix_types'] ) ) {
+				$result_data['applied_fix_types'] = array();
+			}
+			if ( ! in_array( $type, $result_data['applied_fix_types'], true ) ) {
+				$result_data['applied_fix_types'][] = $type;
+			}
 			$brand = isset( $result_data['brand_inclusion_rate'] ) ? (int) $result_data['brand_inclusion_rate'] : 0;
 			$result_data['geo_score'] = $this->gleo_compute_geo_score( $cs, $brand );
 			$geo_score_out            = (int) $result_data['geo_score'];
+			$content_signals_out      = $result_data['content_signals'];
+			$applied_fix_types        = $result_data['applied_fix_types'];
 			$wpdb->update(
 				$table_name,
 				array( 'scan_result' => wp_json_encode( $result_data ) ),
@@ -3950,13 +3984,15 @@ CSS;
 		}
 
 		return rest_ensure_response( array(
-			'success'     => true,
-			'post_id'     => $post_id,
-			'type'        => $type,
-			'modified'    => $modified,
-			'geo_score'   => $geo_score_out,
-			'snapshot_id' => $snapshot_id ?: null,
-			'can_undo'    => ! empty( $snapshot_id ),
+			'success'           => true,
+			'post_id'           => $post_id,
+			'type'              => $type,
+			'modified'          => $modified,
+			'geo_score'         => $geo_score_out,
+			'content_signals'   => $content_signals_out,
+			'applied_fix_types' => $applied_fix_types,
+			'snapshot_id'       => $snapshot_id ?: null,
+			'can_undo'          => ! empty( $snapshot_id ),
 		) );
 	}
 }

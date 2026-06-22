@@ -26,7 +26,7 @@ const GEO_CATEGORY_LABELS = {
 const FIX_APPLY_ORDER = [
     'schema', 'schema_enrich', 'robots_txt_allow', 'opening_summary',
     'formatting', 'readability', 'content_depth', 'faq',
-    'expert_quotes', 'image_alt_text',
+    'image_alt_text',
 ];
 
 const FIX_CONFIG = {
@@ -41,8 +41,6 @@ const FIX_CONFIG = {
     opening_summary:  { label: 'Add AI-readable summary', needsInput: false, successMsg: 'A concise summary was saved for AI crawlers (in page metadata — not shown as a visible “In brief” box).' },
     image_alt_text:       { label: 'Improve image alt text', needsInput: false, successMsg: 'Missing or empty image descriptions were filled using your post title (and saved on the attachments where possible).' },
     robots_txt_allow:     { label: 'Allow AI crawlers (robots.txt)', needsInput: false, successMsg: 'Your site robots.txt now includes explicit Allow rules for common AI crawlers (site-wide).' },
-    expert_quotes:        { label: 'Add expert perspective', needsInput: false, successMsg: 'A short expert-perspective quote block was added to the article.' },
-    visual_enhancement:   { label: 'Improve website appearance', needsInput: false, successMsg: 'Visual enhancements applied — images, layout, and styling updated.' },
 };
 
 // ── Page builder fix safety tiers ───────────────────────────────────────────
@@ -50,8 +48,8 @@ const FIX_CONFIG = {
 // Tier B: append blocks — stored in meta, rendered via the_content filter.
 // Tier C: in-place content edits — blocked on builder pages; shown as copy-paste suggestions.
 const FIX_SAFETY_TIERS = {
-    A: [ 'schema', 'schema_enrich', 'opening_summary', 'robots_txt_allow', 'image_alt_text', 'visual_enhancement', 'structure' ],
-    B: [ 'faq', 'answer_readiness', 'content_depth', 'expert_quotes', 'authority', 'credibility' ],
+    A: [ 'schema', 'schema_enrich', 'opening_summary', 'robots_txt_allow', 'image_alt_text', 'structure' ],
+    B: [ 'faq', 'answer_readiness', 'content_depth', 'authority', 'credibility' ],
     C: [ 'formatting', 'readability' ],
 };
 const getFixTier = ft => {
@@ -230,290 +228,6 @@ const BuilderSuggestionModal = ({ fixType, builderName, suggestionHtml, onClose 
                         <button className="gleo-btn gleo-btn-outline" onClick={onClose}>Close</button>
                     </div>
                 )}
-            </div>
-        </div>
-    );
-};
-
-// ── Design Polish Modal ───────────────────────────────────────────────────────
-const PALETTE_LABELS = {
-    accent:  'Accent (buttons, links, highlights)',
-    text:    'Body text',
-    muted:   'Muted / secondary text',
-    card:    'Card background',
-    surface: 'Surface / section background',
-    border:  'Borders',
-};
-
-const DesignPolishModal = ({ critique, postId, siteWideDefault, onApplied, onCancel }) => {
-    const suggested = critique?.suggested_palette || {};
-    const [colors, setColors] = React.useState({
-        accent:  suggested.accent  || '#3b82f6',
-        text:    suggested.text    || '#0f172a',
-        muted:   suggested.muted   || '#64748b',
-        card:    suggested.card    || '#ffffff',
-        surface: suggested.surface || '#f8fafc',
-        border:  suggested.border  || '#e5e7eb',
-    });
-    const [siteWide, setSiteWide] = React.useState(siteWideDefault ?? false);
-    const [pageWide, setPageWide] = React.useState(false);
-    const [applying, setApplying] = React.useState(false);
-
-    const applyPreset = (preset) => {
-        if (preset === 'ai') {
-            setColors({
-                accent:  suggested.accent  || '#3b82f6',
-                text:    suggested.text    || '#0f172a',
-                muted:   suggested.muted   || '#64748b',
-                card:    suggested.card    || '#ffffff',
-                surface: suggested.surface || '#f8fafc',
-                border:  suggested.border  || '#e5e7eb',
-            });
-        } else if (preset === 'reset') {
-            setColors({ accent: '', text: '', muted: '', card: '', surface: '', border: '' });
-        }
-    };
-
-    const handleApply = async () => {
-        setApplying(true);
-        // #region agent log
-        fetch('http://127.0.0.1:7898/ingest/7384af93-f840-4225-9885-a251d9e6d233',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8b85ea'},body:JSON.stringify({sessionId:'8b85ea',hypothesisId:'A',location:'index.js:handleApply',message:'apply fired',data:{pageWide,siteWide,postId,accent:colors.accent,enabled:true},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
-        const payload = { enabled: true, page_wide: pageWide, source: 'user', ...colors };
-        // #region agent log
-        fetch('http://127.0.0.1:7898/ingest/7384af93-f840-4225-9885-a251d9e6d233',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'8b85ea'},body:JSON.stringify({sessionId:'8b85ea',hypothesisId:'B',location:'index.js:handleApply',message:'payload after spread',data:{enabled:payload.enabled,page_wide:payload.page_wide,accent:payload.accent},timestamp:Date.now()})}).catch(()=>{});
-        // #endregion
-        try {
-            await apiFetch({
-                path: '/gleo/v1/design/apply',
-                method: 'POST',
-                data: {
-                    post_id: siteWide ? 0 : postId,
-                    site_wide: siteWide,
-                    profile: payload,
-                },
-            });
-            onApplied && onApplied(colors);
-        } catch (e) {
-            // swallow — caller handles rescan / toast
-        } finally {
-            setApplying(false);
-        }
-    };
-
-    const issues = critique?.design_issues || [];
-    return (
-        <div className="gleo-modal-backdrop" onClick={onCancel}>
-            <div className="gleo-modal" style={{ maxWidth: 460 }} onClick={e => e.stopPropagation()}>
-                <h3>Improve page design</h3>
-                <p className="gleo-modal-prompt">Choose your palette — Gleo applies it to the page without touching theme files or page builder markup.</p>
-                {issues.length > 0 && (
-                    <ul style={{ fontSize: 12, color: 'var(--fg-muted)', marginBottom: 12, paddingLeft: 16 }}>
-                        {issues.map((iss, i) => <li key={i}>{iss}</li>)}
-                    </ul>
-                )}
-                <div style={{ display: 'flex', gap: 6, marginBottom: 14 }}>
-                    {suggested.accent && (
-                        <button className="gleo-btn gleo-btn-outline" style={{ fontSize: 11, padding: '4px 10px' }} onClick={() => applyPreset('ai')}>Use AI suggestion</button>
-                    )}
-                    <button className="gleo-btn gleo-btn-outline" style={{ fontSize: 11, padding: '4px 10px' }} onClick={() => applyPreset('reset')}>Reset to theme</button>
-                </div>
-                {Object.entries(PALETTE_LABELS).map(([key, label]) => (
-                    <div key={key} className="gleo-field" style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                        <input type="color" value={colors[key] || '#888888'} onChange={e => setColors(p => ({ ...p, [key]: e.target.value }))}
-                            style={{ width: 32, height: 32, border: '1px solid var(--border)', borderRadius: 6, cursor: 'pointer', padding: 2 }} />
-                        <label style={{ fontSize: 13, flex: 1 }}>{label}</label>
-                        <input type="text" value={colors[key]} onChange={e => setColors(p => ({ ...p, [key]: e.target.value }))}
-                            style={{ width: 90, fontSize: 12 }} className="gleo-input" placeholder="#rrggbb" />
-                    </div>
-                ))}
-                <div style={{ borderTop: '1px solid var(--border)', marginTop: 14, paddingTop: 14 }}>
-                    <p style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--fg-muted)', marginBottom: 10 }}>Scope</p>
-                    <label style={{ fontSize: 13, display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 10, cursor: 'pointer' }}>
-                        <input type="checkbox" checked={pageWide} onChange={e => setPageWide(e.target.checked)} style={{ marginTop: 2 }} />
-                        <span>
-                            <strong>Improve whole page</strong> — also style links, headings, and buttons using the palette above
-                            <br/><span style={{ fontSize: 11, color: 'var(--fg-muted)' }}>Without this, only Gleo FAQ/stats/quote blocks change color.</span>
-                        </span>
-                    </label>
-                    <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
-                        <input type="checkbox" checked={siteWide} onChange={e => setSiteWide(e.target.checked)} />
-                        Apply to all pages site-wide (not just this page)
-                    </label>
-                </div>
-                <div className="gleo-modal-actions" style={{ marginTop: 16 }}>
-                    <button className="gleo-btn gleo-btn-outline" onClick={onCancel} disabled={applying}>Skip</button>
-                    <button className="gleo-btn gleo-btn-primary" onClick={handleApply} disabled={applying}>{applying ? 'Applying…' : 'Apply design'}</button>
-                </div>
-            </div>
-        </div>
-    );
-};
-
-// ── Visual Enhancement Modal ──────────────────────────────────────────────────
-const VISUAL_PRESETS = [
-    {
-        id: 'clean',
-        name: 'Clean & Modern',
-        desc: 'Clear heading hierarchy, comfortable reading width, elegant spacing, polished image shadows.',
-        preview: ['H2 with bottom border', '17px body text', 'Centered 720px content', 'Rounded image corners'],
-    },
-    {
-        id: 'editorial',
-        name: 'Editorial',
-        desc: 'Larger text, generous line spacing, prominent lead paragraph — great for blogs and long reads.',
-        preview: ['18px body / 1.88 line-height', 'Large expressive headings', 'Lead paragraph styling', 'Article-style typography'],
-    },
-    {
-        id: 'bold',
-        name: 'Bold & Structured',
-        desc: 'Strong accent-coloured H2 sections, uppercase H3 labels, high contrast — ideal for service pages.',
-        preview: ['H2 with accent sidebar', 'Uppercase H3 labels', 'High-contrast sections', 'Section separation'],
-    },
-];
-
-const VisualEnhancementModal = ({ plan, postId, onApplied, onCancel }) => {
-    const suggested = plan?.suggested_palette || {};
-    const hasHero   = (plan?.image_plan || []).some(s => s.action === 'add_hero') && plan?.unsplash_photo?.url;
-
-    const [preset,      setPreset]      = React.useState('clean');
-    const [applyImages, setApplyImages] = React.useState(hasHero);
-    const [pageWide,    setPageWide]    = React.useState(plan?.recommend_page_wide ?? false);
-    const [showPalette, setShowPalette] = React.useState(false);
-    const [applying,    setApplying]    = React.useState(false);
-    const [colors, setColors] = React.useState({
-        accent:  suggested.accent  || '#3b82f6',
-        text:    suggested.text    || '#0f172a',
-        muted:   suggested.muted   || '#64748b',
-        card:    suggested.card    || '#ffffff',
-        surface: suggested.surface || '#f8fafc',
-        border:  suggested.border  || '#e5e7eb',
-    });
-
-    const handleApply = async () => {
-        setApplying(true);
-        try {
-            await apiFetch({
-                path: '/gleo/v1/appearance/apply',
-                method: 'POST',
-                data: {
-                    post_id:        postId,
-                    layout_preset:  preset,
-                    page_wide:      pageWide,
-                    palette:        colors,
-                    apply_images:   applyImages,
-                    unsplash_photo: applyImages ? (plan?.unsplash_photo || null) : null,
-                },
-            });
-            onApplied && onApplied();
-        } catch (e) {
-            // swallow — caller handles rescan / toast
-        } finally {
-            setApplying(false);
-        }
-    };
-
-    const issues = plan?.issues || [];
-    const photo  = plan?.unsplash_photo;
-
-    return (
-        <div className="gleo-modal-backdrop" onClick={onCancel}>
-            <div className="gleo-modal" style={{ maxWidth: 520 }} onClick={e => e.stopPropagation()}>
-                <h3>Improve website appearance</h3>
-                <p style={{ fontSize: 13, color: 'var(--fg-muted)', marginBottom: 14 }}>
-                    Gleo applies a comprehensive visual design layer — typography, spacing, heading hierarchy, image polish — without touching your theme files. Pick a style:
-                </p>
-
-                {/* AI issues summary */}
-                {issues.length > 0 && (
-                    <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 6, padding: '8px 12px', marginBottom: 14 }}>
-                        <p style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-muted)', marginBottom: 4 }}>AI-detected issues</p>
-                        <ul style={{ fontSize: 12, color: 'var(--fg-muted)', paddingLeft: 16, margin: 0 }}>
-                            {issues.slice(0, 3).map((iss, i) => <li key={i}>{iss}</li>)}
-                        </ul>
-                    </div>
-                )}
-
-                {/* Preset cards */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 16 }}>
-                    {VISUAL_PRESETS.map(p => (
-                        <div key={p.id}
-                            onClick={() => setPreset(p.id)}
-                            style={{
-                                border: `2px solid ${preset === p.id ? 'var(--accent, #3b82f6)' : 'var(--border)'}`,
-                                borderRadius: 8,
-                                padding: '10px 14px',
-                                cursor: 'pointer',
-                                background: preset === p.id ? 'rgba(59,130,246,0.06)' : 'var(--surface)',
-                                transition: 'border-color 0.15s, background 0.15s',
-                            }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
-                                <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--fg)' }}>{p.name}</span>
-                                {preset === p.id && <span style={{ fontSize: 10, background: 'var(--accent, #3b82f6)', color: '#fff', borderRadius: 4, padding: '1px 6px' }}>Selected</span>}
-                            </div>
-                            <p style={{ fontSize: 12, color: 'var(--fg-muted)', margin: '0 0 6px' }}>{p.desc}</p>
-                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                                {p.preview.map((item, i) => (
-                                    <span key={i} style={{ fontSize: 10, background: 'var(--border)', color: 'var(--fg-muted)', borderRadius: 4, padding: '2px 6px' }}>{item}</span>
-                                ))}
-                            </div>
-                        </div>
-                    ))}
-                </div>
-
-                {/* Hero image preview */}
-                {hasHero && photo?.url && (
-                    <div style={{ marginBottom: 14, border: '1px solid var(--border)', borderRadius: 8, overflow: 'hidden' }}>
-                        <img src={photo.url} alt={photo.alt || 'Suggested hero image'} style={{ width: '100%', height: 130, objectFit: 'cover', display: 'block' }} />
-                        <div style={{ padding: '6px 10px', fontSize: 11, color: 'var(--fg-muted)', background: 'var(--surface)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                            <span>{photo.credit || 'Unsplash'}</span>
-                            <label style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-                                <input type="checkbox" checked={applyImages} onChange={e => setApplyImages(e.target.checked)} />
-                                Add as hero image
-                            </label>
-                        </div>
-                    </div>
-                )}
-
-                {/* Options row */}
-                <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 14 }}>
-                    <label style={{ fontSize: 13, display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
-                        <input type="checkbox" checked={pageWide} onChange={e => setPageWide(e.target.checked)} />
-                        Also apply accent colour to page-wide elements (links, buttons, headings)
-                    </label>
-                    <button
-                        type="button"
-                        className="gleo-btn gleo-btn-outline"
-                        style={{ fontSize: 11, padding: '4px 10px', alignSelf: 'flex-start' }}
-                        onClick={() => setShowPalette(v => !v)}>
-                        {showPalette ? 'Hide colour palette' : 'Customise colour palette'}
-                    </button>
-                </div>
-
-                {/* Collapsible palette picker */}
-                {showPalette && (
-                    <div style={{ marginBottom: 14, padding: '10px 12px', background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 8 }}>
-                        <p style={{ fontSize: 11, fontWeight: 600, color: 'var(--fg-muted)', marginBottom: 10 }}>
-                            Colour palette (AI-suggested — edit if needed)
-                        </p>
-                        {Object.entries(PALETTE_LABELS).map(([key, label]) => (
-                            <div key={key} className="gleo-field" style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
-                                <input type="color" value={colors[key] || '#888888'} onChange={e => setColors(p => ({ ...p, [key]: e.target.value }))}
-                                    style={{ width: 28, height: 28, border: '1px solid var(--border)', borderRadius: 4, cursor: 'pointer', padding: 2 }} />
-                                <label style={{ fontSize: 12, flex: 1 }}>{label}</label>
-                                <input type="text" value={colors[key]} onChange={e => setColors(p => ({ ...p, [key]: e.target.value }))}
-                                    style={{ width: 82, fontSize: 11 }} className="gleo-input" placeholder="#rrggbb" />
-                            </div>
-                        ))}
-                    </div>
-                )}
-
-                <div className="gleo-modal-actions" style={{ marginTop: 4 }}>
-                    <button className="gleo-btn gleo-btn-outline" onClick={onCancel} disabled={applying}>Skip</button>
-                    <button className="gleo-btn gleo-btn-primary" onClick={handleApply} disabled={applying}>
-                        {applying ? 'Applying…' : `Apply ${VISUAL_PRESETS.find(p => p.id === preset)?.name || ''} style`}
-                    </button>
-                </div>
             </div>
         </div>
     );
@@ -930,7 +644,7 @@ const gleoPreviewContentRoot = ( doc ) => (
     doc.body
 );
 
-const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied } ) => {
+const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied, appliedFixTypes = [], scanResult = {}, siteUrl = '' } ) => {
     const [ iframeKey, setIframeKey ] = useState( Date.now() );
     const [ iframeLoaded, setIframeLoaded ] = useState( false );
     const iframeRef = useRef( null );
@@ -973,9 +687,9 @@ const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied } ) =>
         setTourReplayUnlocked( true );
     };
 
-    // Auto-scroll to first Gleo block when iframe loads after fixes applied
+    // Show tour prompt when iframe loads and at least one fix has been applied.
     useEffect( () => {
-        if ( ! iframeLoaded || ! allApplied ) {
+        if ( ! iframeLoaded || appliedFixTypes.length === 0 ) {
             return;
         }
         const timer = setTimeout( () => {
@@ -984,102 +698,162 @@ const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied } ) =>
                 return;
             }
             const root = gleoPreviewContentRoot( doc );
-            const first = root.querySelector( '.gleo-qa-block, .gleo-faq-wrap, .gleo-sources-block, h2.wp-block-heading' );
+            const first = root.querySelector( '.gleo-faq-wrap, .gleo-sources-block, .gleo-expert-quote, h2.wp-block-heading' );
             if ( first ) {
                 first.scrollIntoView( { behavior: 'smooth', block: 'center' } );
             }
             setShowTourPrompt( true );
         }, 600 );
         return () => clearTimeout( timer );
-    }, [ iframeLoaded, allApplied ] );
+    }, [ iframeLoaded, appliedFixTypes ] ); // eslint-disable-line react-hooks/exhaustive-deps
 
-    const startTour = () => {
+    const startTour = async () => {
         setShowTourPrompt( false );
         setTourReplayUnlocked( false );
         const doc = iframeRef.current?.contentDocument;
         if ( ! doc ) {
             return;
         }
-        const root = gleoPreviewContentRoot( doc );
-        /** Drop steps whose target sits inside another step’s target (e.g. FAQ item vs whole FAQ). */
-        const dedupeNestedTourTargets = ( entries ) =>
-            entries.filter( ( e, i, arr ) =>
-                ! arr.some( ( o, j ) => j !== i && o.el !== e.el && o.el.contains( e.el ) )
-            );
-        const possibleSteps = [
-            {
-                title: 'Figures & Evidence',
-                blurb: 'This block surfaces numbers and claims so AI answers and readers can cite your page as a credible source.',
-                find: () => root.querySelector( '.gleo-stats-callout' ),
-            },
-            {
-                title: 'Reference Signals',
-                blurb: (
-                    <>
-                        The <strong style={ { color: '#7dd3fc', fontWeight: 700 } }>Sources &amp; References block</strong> is one of the strongest trust signals for AI — models actively prefer pages that cite verifiable, external sources when composing answers.
-                    </>
-                ),
-                find: () => {
-                    const block = root.querySelector( '.gleo-sources-block' );
-                    if ( block ) return block;
-                    const h2s = root.querySelectorAll( 'h2.wp-block-heading, h2' );
-                    const sourceHeading = Array.from( h2s ).find( h => /sources|references/i.test( h.textContent || '' ) );
-                    if ( sourceHeading ) return sourceHeading;
-                    return root.querySelector( 'ol.wp-block-list, ul.wp-block-list' );
-                },
-            },
-            {
-                title: 'Direct Answers',
-                blurb: (
-                    <>
-                        The <strong style={ { color: '#7dd3fc', fontWeight: 700 } }>Q&A block</strong> (green ring) gives a tight question-and-answer pair so assistants can quote an accurate definition.
-                    </>
-                ),
-                find: () => root.querySelector( '.gleo-qa-block' ),
-            },
-            {
-                title: 'FAQ',
-                blurb: (
-                    <>
-                        The <strong style={ { color: '#7dd3fc', fontWeight: 700 } }>FAQ block</strong> answers the real questions customers search for — price, timing, booking, expectations. AI systems pull these verbatim when they match a query.
-                    </>
-                ),
-                find: () => root.querySelector( '.gleo-faq-wrap .gleo-faq-accordion' ) || root.querySelector( '.gleo-faq-wrap' ),
-            },
-            {
-                title: 'Structured Data',
-                blurb: 'JSON‑LD in the page head tells search and AI systems what this content is about without changing what visitors see.',
-                isHead: true,
-                find: () => doc.head?.querySelector( 'script[type="application/ld+json"]' ),
-            },
-        ];
-        let found = [];
-        const seen = new Set();
-        for ( const step of possibleSteps ) {
-            const el = typeof step.find === 'function' ? step.find() : null;
-            if ( el && ! seen.has( el ) ) {
-                const entry = { el, title: step.title, text: step.blurb || '', isHead: !! step.isHead };
-                if ( step.isHead && el.textContent ) {
-                    try {
-                        entry.schemaPayload = JSON.parse( el.textContent );
-                    } catch ( e ) {}
-                }
-                found.push( entry );
-                seen.add( el );
-            }
-        }
-        found = dedupeNestedTourTargets( found );
-        if ( ! found.length ) {
-            alert( 'No AI blocks found yet. Ensure fixes are applied first.' );
+
+        if ( appliedFixTypes.length === 0 ) {
+            setTourState( { active: true, step: 0, elements: [ {
+                title: 'No changes applied yet',
+                text: 'Apply fixes from the report card first, then start the tour to review what changed.',
+                mode: 'panel',
+            } ] } );
             return;
         }
+
+        const root = gleoPreviewContentRoot( doc );
+        const applied = new Set( appliedFixTypes );
+        const urlBase = ( siteUrl || '' ).replace( /\/$/, '' );
+
+        // Fetch /llms.txt and /robots.txt to show file previews in the tour.
+        let llmsTxtText = null;
+        let robotsTxtText = null;
+        try {
+            const r = await fetch( urlBase + '/llms.txt' );
+            if ( r.ok ) llmsTxtText = ( await r.text() ).slice( 0, 700 );
+        } catch ( _ ) {}
+        if ( applied.has( 'robots_txt_allow' ) ) {
+            try {
+                const r = await fetch( urlBase + '/robots.txt' );
+                if ( r.ok ) {
+                    const full = await r.text();
+                    const idx = full.indexOf( '# Gleo' );
+                    robotsTxtText = idx >= 0 ? full.slice( idx, idx + 500 ) : full.slice( 0, 500 );
+                }
+            } catch ( _ ) {}
+        }
+
+        const steps = [];
+
+        // 1. /llms.txt — always present when Gleo is active; no specific fix required.
+        steps.push( {
+            title: '/llms.txt',
+            text: 'Gleo generates this file automatically. It gives AI crawlers a structured summary of your site, pages, and practice details so they can reference you accurately.',
+            mode: 'panel',
+            previewText: llmsTxtText,
+            linkUrl: urlBase + '/llms.txt',
+            linkLabel: 'Open /llms.txt',
+        } );
+
+        // 2. robots.txt — only shown if that fix was applied.
+        if ( applied.has( 'robots_txt_allow' ) ) {
+            steps.push( {
+                title: 'robots.txt — AI crawler rules',
+                text: FIX_CONFIG.robots_txt_allow?.successMsg || 'AI crawler Allow rules added to robots.txt.',
+                mode: 'panel',
+                previewText: robotsTxtText,
+                linkUrl: urlBase + '/robots.txt',
+                linkLabel: 'Open /robots.txt',
+            } );
+        }
+
+        // 3. Schema — uses stored json_ld_schema from scan result (not a live <head> scrape).
+        if ( applied.has( 'schema' ) || applied.has( 'schema_enrich' ) ) {
+            const schemaPayload = scanResult?.json_ld_schema || null;
+            steps.push( {
+                title: 'Structured data (JSON-LD)',
+                text: 'Schema markup is now injected into the page <head>. Search engines and AI systems use it to understand page type, author, and business details — without changing anything visitors see.',
+                mode: 'panel',
+                schemaPayload,
+            } );
+        }
+
+        // 4. AI-readable summary — head-only meta, no visible block on the page.
+        if ( applied.has( 'opening_summary' ) ) {
+            steps.push( {
+                title: 'AI-readable summary',
+                text: FIX_CONFIG.opening_summary?.successMsg || 'A concise summary was saved for AI crawlers in page metadata.',
+                mode: 'panel',
+            } );
+        }
+
+        // 5. Image alt text — attachment meta change, no visible block.
+        if ( applied.has( 'image_alt_text' ) ) {
+            steps.push( {
+                title: 'Image alt text',
+                text: FIX_CONFIG.image_alt_text?.successMsg || 'Image alt text updated on this post.',
+                mode: 'panel',
+            } );
+        }
+
+        // 6. FAQ — highlight .gleo-faq-wrap if in DOM, otherwise panel note.
+        if ( applied.has( 'faq' ) || applied.has( 'answer_readiness' ) ) {
+            const el = root.querySelector( '.gleo-faq-wrap' );
+            steps.push( el
+                ? { title: 'FAQ block', text: FIX_CONFIG.faq?.successMsg || 'FAQ block added.', mode: 'highlight', el }
+                : { title: 'FAQ block', text: ( FIX_CONFIG.faq?.successMsg || 'FAQ block added.' ) + ' (Not visible in this preview — this can happen on page-builder sites.)', mode: 'panel' }
+            );
+        }
+
+        // 7. Statistics callout (manual input fix — block may not be present).
+        if ( applied.has( 'authority' ) ) {
+            const el = root.querySelector( '.gleo-stats-callout' );
+            steps.push( el
+                ? { title: 'Statistics callout', text: FIX_CONFIG.authority?.successMsg || 'Statistics callout added.', mode: 'highlight', el }
+                : { title: 'Statistics callout', text: FIX_CONFIG.authority?.successMsg || 'Statistics callout added.', mode: 'panel' }
+            );
+        }
+
+        // 8. Sources & references (manual input fix — block may not be present).
+        if ( applied.has( 'credibility' ) ) {
+            const el = root.querySelector( '.gleo-sources-block' );
+            steps.push( el
+                ? { title: 'Sources & references', text: FIX_CONFIG.credibility?.successMsg || 'Sources block added.', mode: 'highlight', el }
+                : { title: 'Sources & references', text: FIX_CONFIG.credibility?.successMsg || 'Sources block added.', mode: 'panel' }
+            );
+        }
+
+        // 9. Content depth — appended paragraphs with no distinct wrapper class.
+        if ( applied.has( 'content_depth' ) ) {
+            steps.push( {
+                title: 'Expanded content',
+                text: FIX_CONFIG.content_depth?.successMsg || 'In-depth paragraphs have been added to strengthen content quality.',
+                mode: 'panel',
+            } );
+        }
+
+        // 10. Formatting / readability — in-place content edits, no wrapper class.
+        if ( applied.has( 'formatting' ) || applied.has( 'readability' ) ) {
+            const labels = [];
+            if ( applied.has( 'formatting' ) ) labels.push( 'converting dense paragraphs to lists' );
+            if ( applied.has( 'readability' ) ) labels.push( 'splitting long paragraphs' );
+            steps.push( {
+                title: 'Content polish',
+                text: `In-place edits were applied to the post content: ${ labels.join( ' and ' ) }.`,
+                mode: 'panel',
+            } );
+        }
+
         if ( ! doc.getElementById( 'gleo-tour-styles' ) ) {
             const s = doc.createElement( 'style' );
             s.id = 'gleo-tour-styles';
             s.textContent = '.gleo-dimmed{transition:opacity .35s;opacity:0.22;filter:grayscale(55%);pointer-events:none}.gleo-highlight{opacity:1!important;filter:none!important;position:relative;z-index:999999;border-radius:14px;pointer-events:auto;outline:3px solid #34d399;outline-offset:3px;box-shadow:0 0 0 20000px rgba(15,23,42,.82),0 0 0 1px rgba(52,211,153,.9) inset,0 0 48px rgba(52,211,153,.55),0 12px 40px rgba(59,130,246,.35);background:rgba(15,23,42,.08)!important;transition:box-shadow .2s ease,outline-color .2s ease}';
             doc.head.appendChild( s );
         }
-        setTourState( { active: true, step: 0, elements: found } );
+        setTourState( { active: true, step: 0, elements: steps } );
     };
 
     useEffect( () => {
@@ -1096,7 +870,7 @@ const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied } ) =>
         if ( ! cur ) {
             return;
         }
-        if ( ! cur.isHead ) {
+        if ( cur.mode === 'highlight' && cur.el ) {
             const dimHost = gleoPreviewContentRoot( doc );
             let topBlocks;
             if ( dimHost ) {
@@ -1118,6 +892,7 @@ const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied } ) =>
                 cur.el.scrollIntoView( { behavior: 'smooth', block: 'center', inline: 'nearest' } );
             } );
         } else {
+            // Panel steps: dim the iframe and scroll to top so the info card is the focus.
             Array.from( doc.body.children ).forEach( c => c.classList.add( 'gleo-dimmed' ) );
             iframeRef.current.contentWindow.scrollTo( { top: 0, behavior: 'smooth' } );
         }
@@ -1138,16 +913,21 @@ const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied } ) =>
                 <div style={ { display: 'flex', alignItems: 'center', gap: 24 } }>
                     <div style={ { fontSize: 18, fontWeight: 800, color: '#fff', letterSpacing: '-0.02em' } }>Live Preview</div>
                     { ! allApplied ? (
-                        <button className="gleo-btn gleo-btn-primary" style={ { fontSize: 14, padding: '9px 24px', borderRadius: 10 } }
-                            onClick={ onApplyAll } disabled={ applyingAll }>
-                            { applyingAll ? 'Applying auto-fixes…' : 'Apply all auto-fixes' }
-                        </button>
+                        <div style={ { display: 'flex', alignItems: 'center', gap: 8 } }>
+                            <button className="gleo-btn gleo-btn-primary" style={ { fontSize: 14, padding: '9px 24px', borderRadius: 10 } }
+                                onClick={ onApplyAll } disabled={ applyingAll }>
+                                { applyingAll ? 'Applying auto-fixes…' : 'Apply all auto-fixes' }
+                            </button>
+                            { tourReplayUnlocked && ! tourState.active && appliedFixTypes.length > 0 ? (
+                                <button type="button" className="gleo-btn gleo-preview-chrome-btn" onClick={ startTour } style={ { padding: '6px 14px', fontSize: 12, borderRadius: 8 } }>Review changes</button>
+                            ) : null }
+                        </div>
                     ) : (
                         <div style={ { display: 'flex', alignItems: 'center', gap: 8 } }>
                             <span style={ { fontSize: 16 } }>✅</span>
                             <span style={ { color: '#4ade80', fontWeight: 700, fontSize: 14 } }>All auto-fixes active</span>
                             { tourReplayUnlocked && ! tourState.active ? (
-                                <button type="button" className="gleo-btn gleo-preview-chrome-btn" onClick={ startTour } style={ { marginLeft: 12, padding: '6px 14px', fontSize: 12, borderRadius: 8 } }>Restart AI Tour</button>
+                                <button type="button" className="gleo-btn gleo-preview-chrome-btn" onClick={ startTour } style={ { marginLeft: 12, padding: '6px 14px', fontSize: 12, borderRadius: 8 } }>Review changes</button>
                             ) : null }
                         </div>
                     ) }
@@ -1175,15 +955,17 @@ const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied } ) =>
                     <div style={ { position: 'absolute', top: 30, right: 30, background: '#ffffff', padding: '24px', borderRadius: 20, width: 340, boxShadow: '0 20px 25px -5px rgba(0,0,0,0.1), 0 10px 10px -5px rgba(0,0,0,0.04)', zIndex: 100, border: '1px solid #e2e8f0' } }>
                         <button type="button" onClick={ () => { setShowTourPrompt( false ); setTourReplayUnlocked( true ); } } style={ { position: 'absolute', top: 12, right: 16, background: 'transparent', border: 'none', color: '#94a3b8', fontSize: 20, cursor: 'pointer' } }>×</button>
                         <div style={ { width: 44, height: 44, background: 'var(--gleo-accent-bg)', color: 'var(--gleo-accent)', borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22, marginBottom: 16 } }>✨</div>
-                        <h4 style={ { margin: '0 0 8px', fontSize: 18, color: '#0f172a', fontWeight: 800 } }>AI Changes Applied</h4>
-                        <p style={ { color: '#64748b', fontSize: 14, margin: '0 0 20px', lineHeight: 1.5 } }>Walk through where new GEO blocks were added.</p>
+                        <h4 style={ { margin: '0 0 8px', fontSize: 18, color: '#0f172a', fontWeight: 800 } }>Review Gleo changes</h4>
+                        <p style={ { color: '#64748b', fontSize: 14, margin: '0 0 20px', lineHeight: 1.5 } }>Walk through exactly what was changed — visible content blocks and site-wide technical updates like schema and /llms.txt.</p>
                         <button className="gleo-btn gleo-btn-primary" type="button" onClick={ startTour } style={ { width: '100%', padding: '12px', fontSize: 14, fontWeight: 700, borderRadius: 12 } }>
                             Start Guided AI Tour
                         </button>
                     </div>
                 ) }
 
-                { tourState.active && tourState.elements[ tourState.step ] && (
+                { tourState.active && tourState.elements[ tourState.step ] && ( () => {
+                    const cur = tourState.elements[ tourState.step ];
+                    return (
                     <div style={ {
                         position: 'absolute',
                         top: 10,
@@ -1193,7 +975,7 @@ const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied } ) =>
                         padding: '20px 24px',
                         borderRadius: 20,
                         width: 'min(92vw, 480px)',
-                        maxHeight: 'min(42vh, 360px)',
+                        maxHeight: 'min(55vh, 480px)',
                         overflowY: 'auto',
                         boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)',
                         border: '1px solid rgba(255,255,255,0.1)',
@@ -1205,21 +987,39 @@ const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied } ) =>
                                 <span className="gleo-tour-step-pill" style={ { color: '#94a3b8', fontSize: 11.5, fontWeight: 700, letterSpacing: '0.02em' } }>
                                     Step { tourState.step + 1 } of { tourState.elements.length }
                                 </span>
+                                { cur.mode === 'panel' && (
+                                    <span style={ { fontSize: 10, fontWeight: 700, color: '#64748b', background: 'rgba(255,255,255,0.05)', borderRadius: 6, padding: '2px 6px', letterSpacing: '0.05em', textTransform: 'uppercase' } }>
+                                        Site-wide
+                                    </span>
+                                ) }
                             </div>
                             <button type="button" onClick={ finishTourSession } style={ { background: 'transparent', border: 'none', color: '#64748b', fontSize: 24, cursor: 'pointer', padding: 0 } }>&times;</button>
                         </div>
-                        <h3 className="gleo-tour-step-title" style={ { color: '#fff', margin: '0 0 10px', fontSize: 20, fontWeight: 800, letterSpacing: '-0.02em' } }>{ tourState.elements[ tourState.step ].title }</h3>
-                        { tourState.elements[ tourState.step ].text ? (
+                        <h3 className="gleo-tour-step-title" style={ { color: '#fff', margin: '0 0 10px', fontSize: 20, fontWeight: 800, letterSpacing: '-0.02em' } }>{ cur.title }</h3>
+                        { cur.text ? (
                             <p className="gleo-tour-step-blurb" style={ { color: '#94a3b8', margin: '0 0 16px', fontSize: 14, lineHeight: 1.55, fontWeight: 500 } }>
-                                { tourState.elements[ tourState.step ].text }
+                                { cur.text }
                             </p>
                         ) : null }
-                        { tourState.elements[ tourState.step ].schemaPayload && (
+                        { cur.schemaPayload && (
                             <div style={ { marginBottom: 16 } }>
-                                <div style={ { fontSize: 11, color: '#94a3b8', fontWeight: 700, marginBottom: 8, textTransform: 'uppercase' } }>Injected JSON-LD</div>
-                                <pre style={ { background: '#0f172a', color: '#10b981', padding: '12px', borderRadius: 12, fontSize: 11, overflowX: 'auto', maxHeight: 140, border: '1px solid rgba(255,255,255,0.1)', margin: 0, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' } }>
-                                    <code>{ JSON.stringify( tourState.elements[ tourState.step ].schemaPayload, null, 2 ) }</code>
+                                <div style={ { fontSize: 11, color: '#94a3b8', fontWeight: 700, marginBottom: 8, textTransform: 'uppercase' } }>JSON-LD schema</div>
+                                <pre style={ { background: '#0f172a', color: '#10b981', padding: '12px', borderRadius: 12, fontSize: 11, overflowX: 'auto', maxHeight: 160, border: '1px solid rgba(255,255,255,0.1)', margin: 0, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace' } }>
+                                    <code>{ JSON.stringify( cur.schemaPayload, null, 2 ) }</code>
                                 </pre>
+                            </div>
+                        ) }
+                        { cur.previewText && (
+                            <div style={ { marginBottom: 16 } }>
+                                <div style={ { fontSize: 11, color: '#94a3b8', fontWeight: 700, marginBottom: 8, textTransform: 'uppercase' } }>Live file preview</div>
+                                <pre style={ { background: '#0f172a', color: '#7dd3fc', padding: '12px', borderRadius: 12, fontSize: 11, overflowX: 'auto', maxHeight: 160, border: '1px solid rgba(255,255,255,0.1)', margin: 0, fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace', whiteSpace: 'pre-wrap', wordBreak: 'break-word' } }>{ cur.previewText }</pre>
+                            </div>
+                        ) }
+                        { cur.linkUrl && (
+                            <div style={ { marginBottom: 16 } }>
+                                <a href={ cur.linkUrl } target="_blank" rel="noopener noreferrer" style={ { color: '#60a5fa', fontSize: 13, fontWeight: 600, textDecoration: 'none' } }>
+                                    { cur.linkLabel || cur.linkUrl } ↗
+                                </a>
                             </div>
                         ) }
                         <div style={ { display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 8 } }>
@@ -1242,7 +1042,8 @@ const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied } ) =>
                             ) }
                         </div>
                     </div>
-                ) }
+                    );
+                } )() }
             </div>
         </div>
     );
@@ -1265,8 +1066,6 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
     const [optimizeStepIdx, setOptimizeStepIdx] = useState(0);
     const [optimizeDetail, setOptimizeDetail]   = useState('');
     const [optimizeDone, setOptimizeDone]       = useState(false);
-    const [designModal, setDesignModal]                       = useState(null); // { critique }
-    const [visualEnhancementModal, setVisualEnhancementModal] = useState(null); // { plan }
     const [builderSuggestionModal, setBuilderSuggestionModal] = useState(null); // { fixType, builderName, suggestionHtml }
     const [undoStatus, setUndoStatus] = useState({ canUndo: false, fixType: null, snapshotId: null });
     const [isUndoing, setIsUndoing]   = useState(false);
@@ -1283,10 +1082,46 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
             .catch(() => {});
     }, [ post_id ]); // eslint-disable-line react-hooks/exhaustive-deps
 
+    // Restore applied-fix state from persisted scan results (survives page reload).
+    useEffect(() => {
+        const types = result?.applied_fix_types;
+        if ( ! Array.isArray( types ) || types.length === 0 ) {
+            return;
+        }
+        setAppliedTypes( prev => {
+            const next = { ...prev };
+            types.forEach( ft => { next[ ft ] = true; } );
+            return next;
+        } );
+    }, [ post_id, result?.applied_fix_types ] ); // eslint-disable-line react-hooks/exhaustive-deps
+
     if (!result) return null;
 
     const addToast    = msg => { const id = Date.now(); setToasts(p => [...p, { id, message: msg }]); };
     const removeToast = id  => setToasts(p => p.filter(t => t.id !== id));
+
+    const mergeApplyResponse = ( res, fixType ) => {
+        if ( ! onReportUpdated || ! res ) {
+            return;
+        }
+        onReportUpdated( post_id, base => {
+            const next = { ...( base || {} ) };
+            if ( typeof res.geo_score === 'number' ) {
+                next.geo_score = res.geo_score;
+            }
+            if ( res.content_signals && typeof res.content_signals === 'object' ) {
+                next.content_signals = { ...( base?.content_signals || {} ), ...res.content_signals };
+            }
+            if ( Array.isArray( res.applied_fix_types ) ) {
+                next.applied_fix_types = res.applied_fix_types;
+            } else if ( fixType ) {
+                const prev = new Set( base?.applied_fix_types || [] );
+                prev.add( fixType );
+                next.applied_fix_types = [ ...prev ];
+            }
+            return next;
+        } );
+    };
 
     const collectAutoFixTypesForItem = ( item ) => {
         if ( item.noAutofix ) {
@@ -1432,7 +1267,6 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
             const msg = score >= (substantiveMax - 2) ? 'Strong topical depth and credibility signals in the body.' : issues.join('. ') + '.';
             const sub = [];
             if (!isHealthcare && cs.word_count < 1200) sub.push('content_depth');
-            if (!cs.has_quotes) sub.push('expert_quotes');
             const subF = sub.filter(ft => FIX_CONFIG[ft] && !FIX_CONFIG[ft].needsInput);
             items.push({
                 priority: score >= (substantiveMax - 2) ? 'positive' : score <= 4 ? 'high' : 'medium',
@@ -1475,7 +1309,6 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
             }
             const msg = score === trustMax ? (isHealthcare ? 'Strong credibility signals including disclaimer and authoritative citations.' : 'Excellent credibility signals. Statistics, citations, and expert quotes are present.') : issues.join('. ') + '.';
             const credF = [];
-            if (!cs.has_quotes) credF.push('expert_quotes');
             items.push({
                 priority: score === trustMax ? 'positive' : score <= 5 ? 'high' : 'medium',
                 area: GEO_CATEGORY_LABELS.trust, maxScore: trustMax, score, message: msg,
@@ -1536,33 +1369,6 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
             });
         }
 
-        // ── 7. Visual Design (informational — triggers VisualEnhancementModal) ──
-        {
-            const critique  = result.last_critique || {};
-            const vscore    = typeof critique.visual_score === 'number' ? critique.visual_score : null;
-            const noImages  = cs.image_count === 0;
-            const hasIssues = critique.recommend_design_polish || ( vscore !== null && vscore < 7 ) || noImages;
-            const score     = vscore !== null ? vscore : ( hasIssues ? 3 : 8 );
-            const msg = score >= 8
-                ? 'The page looks polished. Images, spacing, and colours are in good shape.'
-                : noImages
-                    ? 'No images detected. Adding a hero image and improving spacing can make this page significantly more engaging.'
-                    : vscore !== null
-                        ? `Visual score ${vscore}/10. ${(critique.design_issues || []).slice(0, 2).join('. ')}${critique.design_issues?.length ? '.' : ''}`
-                        : 'Run "One-click optimize" to get an AI visual review and improvement suggestions.';
-            items.push({
-                priority: score >= 8 ? 'positive' : score <= 4 ? 'high' : 'medium',
-                area: 'Visual Design',
-                maxScore: 10,
-                score,
-                message: msg,
-                fixType: hasIssues ? 'visual_enhancement' : null,
-                extraFixes: [],
-                emoji: '🎨',
-                noAutofix: true,
-            });
-        }
-
         return items.map(item => {
             const autoTypes = collectAutoFixTypesForItem(item);
             const appliedRow = autoTypes.length === 0
@@ -1583,9 +1389,7 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
         return apiFetch({ path: '/gleo/v1/apply', method: 'POST', data })
             .then(( res ) => {
                 setAppliedTypes( p => ( { ...p, [ fixType ]: true } ) );
-                if ( typeof res?.geo_score === 'number' && onReportUpdated ) {
-                    onReportUpdated( post_id, { ...result, geo_score: res.geo_score } );
-                }
+                mergeApplyResponse( res, fixType );
                 if ( res?.can_undo ) {
                     setUndoStatus({ canUndo: true, fixType, snapshotId: res.snapshot_id || null });
                 }
@@ -1634,58 +1438,23 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
             .finally(() => setIsUndoing(false));
     };
 
-    /**
-     * Run the appearance analysis via the Node API then open VisualEnhancementModal.
-     * If a cached plan exists in last_appearance_plan, use it directly.
-     */
-    const launchVisualEnhancement = async () => {
-        // If we already have a fresh plan from this session, show it immediately.
-        if ( result.last_appearance_plan ) {
-            setVisualEnhancementModal( { plan: result.last_appearance_plan } );
-            return;
-        }
-        addToast( 'Analyzing page appearance…' );
-        try {
-            const res = await apiFetch( {
-                path: '/gleo/v1/appearance/analyze',
-                method: 'POST',
-                data: { post_id },
-            } );
-            const plan = res?.data || {};
-            // Cache on the result object so repeated clicks don't re-analyze
-            if ( onReportUpdated ) {
-                onReportUpdated( post_id, { ...result, last_appearance_plan: plan } );
-            }
-            setVisualEnhancementModal( { plan } );
-        } catch ( e ) {
-            addToast( 'Appearance analysis failed — Node API may be offline.' );
-        }
-    };
-
     const applyCategoryFixes = async ( item ) => {
-        // Visual enhancement is modal-driven, not a batch apply
-        if ( item.fixType === 'visual_enhancement' ) {
-            launchVisualEnhancement();
-            return;
-        }
         const types = collectAutoFixTypesForItem( item );
         if ( types.length === 0 ) {
             return;
         }
-        let failed = false;
-        for ( const ft of types ) {
-            setApplyingTypes( p => ( { ...p, [ ft ]: true } ) );
-            try {
-                await apiFetch( { path: '/gleo/v1/apply', method: 'POST', data: { post_id, type: ft, enabled: true } } );
-                await new Promise( r => setTimeout( r, 70 ) );
-                setAppliedTypes( p => ( { ...p, [ ft ]: true } ) );
-            } catch ( e ) {
-                failed = true;
-            } finally {
-                setApplyingTypes( p => ( { ...p, [ ft ]: false } ) );
-            }
+        const pending = types.filter( ft => ! appliedTypes[ ft ] );
+        if ( pending.length === 0 ) {
+            addToast( 'This category is already fixed.' );
+            return;
         }
-        addToast( failed ? 'Some fixes in this category failed.' : `Applied: ${ types.map( ft => FIX_CONFIG[ ft ]?.label || ft ).join( ', ' ) }` );
+        const failed = await applyFixTypes( types );
+        if ( failed.length > 0 ) {
+            const labels = failed.map( ft => FIX_CONFIG[ ft ]?.label || ft ).join( ', ' );
+            addToast( `Some fixes in this category failed: ${ labels }.` );
+        } else {
+            addToast( `Applied: ${ types.map( ft => FIX_CONFIG[ ft ]?.label || ft ).join( ', ' ) }` );
+        }
     };
 
     const handleFix = (fixType, item) => {
@@ -1693,10 +1462,6 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
         if (!config) return;
         if (fixType === 'faq') {
             setModal({ fixType: 'faq_placement', title: 'FAQ placement', layoutMap: result.layout_map || {} });
-            return;
-        }
-        if (fixType === 'visual_enhancement') {
-            launchVisualEnhancement();
             return;
         }
         // Tier C fixes on builder pages: route to suggestion modal without a round-trip to the server.
@@ -1726,8 +1491,9 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
             extra.placement_strategy = result.layout_map?.recommended_strategy || 'append_end';
         }
         const res = await apiFetch( { path: '/gleo/v1/apply', method: 'POST', data: { post_id, type: ft, enabled: true, ...extra } } );
-        if ( typeof res?.geo_score === 'number' && onReportUpdated ) {
-            onReportUpdated( post_id, { ...result, geo_score: res.geo_score } );
+        mergeApplyResponse( res, ft );
+        if ( res?.can_undo ) {
+            setUndoStatus({ canUndo: true, fixType: ft, snapshotId: res.snapshot_id || null });
         }
         return res;
     };
@@ -1836,39 +1602,6 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
                 await applyFixTypes( critique.follow_up_fix_types );
             } else {
                 setStep( 3, 'No extra refinements needed', critique?.summary || 'Page passed visual review.' );
-            }
-
-            // Offer visual enhancement if AI recommends it or visual score is below 7.
-            // Use the richer VisualEnhancementModal when the page needs appearance work
-            // (image additions, layout, typography). Fall back to DesignPolishModal for
-            // palette-only edits when the page is already structurally fine.
-            const needsFullEnhancement = critique && (
-                ( critique.visual_score != null && critique.visual_score < 7 )
-            );
-            const needsPaletteOnly = critique && !needsFullEnhancement && (
-                critique.recommend_design_polish || ( critique.visual_score != null && critique.visual_score < 8 )
-            );
-            if ( needsFullEnhancement ) {
-                setOptimizeDone( true );
-                setOptimizeDetail( critique.summary || '' );
-                // Run appearance analysis in the background then open the modal
-                try {
-                    const appRes = await apiFetch( {
-                        path: '/gleo/v1/appearance/analyze',
-                        method: 'POST',
-                        data: { post_id },
-                    } );
-                    setVisualEnhancementModal( { plan: appRes?.data || {} } );
-                } catch ( _e ) {
-                    // If analysis fails, fall back to the palette-only modal
-                    setDesignModal( { critique } );
-                }
-                return;
-            }
-            if ( needsPaletteOnly ) {
-                setOptimizeDone( true );
-                setDesignModal( { critique } );
-                return; // Resume after user dismisses modal (rescan happens on close).
             }
 
             setStep( 4, 'Re-scoring your page…' );
@@ -2003,14 +1736,6 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
                         Move FAQ to another section
                     </button>
                 )}
-                <button type="button" className="gleo-btn gleo-btn-outline" style={{ fontSize: 12, marginTop: 8 }}
-                    onClick={() => setDesignModal({ critique: result.last_critique || {} })}>
-                    Improve Gleo block design
-                </button>
-                <button type="button" className="gleo-btn gleo-btn-outline" style={{ fontSize: 12, marginTop: 8 }}
-                    onClick={launchVisualEnhancement}>
-                    Improve website appearance
-                </button>
             </div>
 
             { showReportBody && (
@@ -2112,7 +1837,10 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
 
             { showPreview && postUrl && (
                 <SitePreview url={ postUrl } onClose={ () => setShowPreview( false ) }
-                    onApplyAll={ handleApplyAll } applyingAll={ isApplyingAll } allApplied={ allAutoFixed }/>
+                    onApplyAll={ handleApplyAll } applyingAll={ isApplyingAll } allApplied={ allAutoFixed }
+                    appliedFixTypes={ Object.keys( appliedTypes ).filter( ft => appliedTypes[ ft ] ) }
+                    scanResult={ result }
+                    siteUrl={ siteUrl }/>
             ) }
 
             {builderSuggestionModal && (
@@ -2146,46 +1874,6 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
                 <InputModal title={modal.title} prompt={modal.prompt} inputType={modal.inputType}
                     onSubmit={input => { doApply(modal.fixType, input); setModal(null); }}
                     onCancel={() => setModal(null)}/>
-            )}
-            {designModal && (
-                <DesignPolishModal
-                    critique={designModal.critique}
-                    postId={post_id}
-                    siteWideDefault={false}
-                    onApplied={async () => {
-                        setDesignModal(null);
-                        addToast('Design applied. Rescanning…');
-                        const prevScore = typeof result.geo_score === 'number' ? result.geo_score : null;
-                        try {
-                            await apiFetch({ path: '/gleo/v1/scan/rescan-post', method: 'POST', data: { post_id } });
-                            const fresh = await pollRescanResult(prevScore);
-                            if (fresh && onReportUpdated) onReportUpdated(post_id, fresh);
-                        } catch (_) {}
-                        setOptimizeOpen(false);
-                    }}
-                    onCancel={() => {
-                        setDesignModal(null);
-                        setOptimizeOpen(false);
-                    }}
-                />
-            )}
-            {visualEnhancementModal && (
-                <VisualEnhancementModal
-                    plan={visualEnhancementModal.plan}
-                    postId={post_id}
-                    onApplied={async () => {
-                        setVisualEnhancementModal(null);
-                        setAppliedTypes(p => ({ ...p, visual_enhancement: true }));
-                        addToast('Appearance improvements applied. Rescanning…');
-                        const prevScore = typeof result.geo_score === 'number' ? result.geo_score : null;
-                        try {
-                            await apiFetch({ path: '/gleo/v1/scan/rescan-post', method: 'POST', data: { post_id } });
-                            const fresh = await pollRescanResult(prevScore);
-                            if (fresh && onReportUpdated) onReportUpdated(post_id, fresh);
-                        } catch (_) {}
-                    }}
-                    onCancel={() => setVisualEnhancementModal(null)}
-                />
             )}
         </div>
     );
@@ -2816,10 +2504,16 @@ const App = () => {
                                         key={ r.post_id }
                                         report={ r }
                                         totalReportCards={ scanResults.length }
-                                        onReportUpdated={ ( pid, fresh ) => {
-                                            setScanResults( prev => prev.map( row => (
-                                                row.post_id === pid ? { ...row, result: fresh } : row
-                                            ) ) );
+                                        onReportUpdated={ ( pid, freshOrFn ) => {
+                                            setScanResults( prev => prev.map( row => {
+                                                if ( row.post_id !== pid ) {
+                                                    return row;
+                                                }
+                                                const fresh = typeof freshOrFn === 'function'
+                                                    ? freshOrFn( row.result )
+                                                    : freshOrFn;
+                                                return { ...row, result: fresh };
+                                            } ) );
                                         } }
                                     />
                                 ) ) }
