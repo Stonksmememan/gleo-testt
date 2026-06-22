@@ -122,11 +122,23 @@ const OptimizeProgressModal = ( { open, step, stepIndex, totalSteps, detail, onC
 
 // ── Toast ────────────────────────────────────────────────────────────────────
 const SuccessToast = ({ message, onDismiss }) => {
-    useEffect(() => { const t = setTimeout(onDismiss, 5000); return () => clearTimeout(t); }, [onDismiss]);
+    useEffect(() => {
+        const t = setTimeout( onDismiss, 5000 );
+        return () => clearTimeout( t );
+    }, [ onDismiss ] );
+
     return (
         <div className="gleo-toast">
             <span className="gleo-toast-icon">&#10003;</span>
-            <span>{message}</span>
+            <span className="gleo-toast-message">{ message }</span>
+            <button
+                type="button"
+                className="gleo-toast-close"
+                onClick={ onDismiss }
+                aria-label="Dismiss"
+            >
+                &times;
+            </button>
         </div>
     );
 };
