@@ -187,6 +187,79 @@ async function generateContextualAssets(title, content, layoutMap = null, practi
 }
 
 /**
+ * Extracts existing FAQ question/answer pairs from live HTML using multiple sources.
+ * Priority order:
+ *   1. FAQPage JSON-LD mainEntity nodes
+ *   2. <details><summary> blocks
+ *   3. Accordion markup: aria-expanded button + sibling answer element
+ *   4. H3/H4 heading ending in "?" inside FAQ-labelled sections
+ *
+ * Returns up to 6 deduplicated {q, a} pairs, or an empty array.
+ */
+function extractExistingFaqs(htmlContent) {
+  const $ = cheerio.load(htmlContent || '');
+  const pairs = [];
+  const seenQ = new Set();
+
+  const addPair = (q, a) => {
+    const qNorm = (q || '').trim().replace(/\s+/g, ' ');
+    const aNorm = (a || '').trim().replace(/\s+/g, ' ');
+    if (!qNorm || !aNorm || qNorm.length < 5 || aNorm.length < 5) return;
+    if (seenQ.has(qNorm.toLowerCase())) return;
+    seenQ.add(qNorm.toLowerCase());
+    pairs.push({ q: qNorm, a: aNorm });
+  };
+
+  // 1. FAQPage JSON-LD mainEntity
+  $('script[type="application/ld+json"]').each((_, el) => {
+    try {
+      const data = JSON.parse($(el).text());
+      const candidates = Array.isArray(data['@graph']) ? data['@graph'] : [data];
+      for (const node of candidates) {
+        const types = [].concat(node['@type'] || []);
+        if (!types.includes('FAQPage')) continue;
+        for (const entity of [].concat(node.mainEntity || [])) {
+          addPair(entity.name || '', entity.acceptedAnswer?.text || '');
+        }
+      }
+    } catch (_e) {}
+  });
+
+  // 2. <details><summary> blocks
+  $('details').each((_, el) => {
+    const q = $(el).find('summary').first().text();
+    const a = $(el).find('p, div').first().text();
+    addPair(q, a);
+  });
+
+  // 3. Accordion: aria-expanded button + sibling answer element
+  $('button[aria-expanded]').each((_, el) => {
+    const $btn = $(el);
+    const q = $btn.text();
+    const $parent = $btn.parent();
+    const a = $parent.find('> div, > p, > [role="region"]').first().text()
+           || $parent.next().text();
+    addPair(q, a);
+  });
+
+  // 4. H3/H4 ending in "?" inside FAQ-labelled sections
+  $('section, div, article').filter((_, el) => {
+    const cls = ($(el).attr('class') || '');
+    const id  = ($(el).attr('id') || '');
+    return /faq|question/i.test(cls + id);
+  }).each((_, section) => {
+    $(section).find('h3, h4').each((_, hEl) => {
+      const q = $(hEl).text().trim();
+      if (!q.endsWith('?')) return;
+      const a = $(hEl).next('p').text() || $(hEl).next().text();
+      addPair(q, a);
+    });
+  });
+
+  return pairs.slice(0, 6);
+}
+
+/**
  * Analyzes a single post for Generative Engine Optimization (GEO).
  * Uses Tavily to understand how AI engines see the post's topic,
  * then scores the post and generates actionable recommendations based on live HTML.
@@ -234,8 +307,23 @@ async function analyzePost(post, siteUrl = '', practiceProfile = null) {
   // --- Step 5: Generate JSON-LD Schema ---
   const jsonLdSchema = generateJsonLd(title, content, siteUrl);
 
-  // --- Step 6: Generate Contextual Assets ---
+  // --- Step 6a: Scrape existing FAQs from live HTML ---
+  const scrapedFaqPairs = extractExistingFaqs(content);
+
+  // --- Step 6b: Generate Contextual Assets (Gemini) ---
   const contextualAssets = await generateContextualAssets(title, content, layoutMap, practiceProfile);
+
+  // --- Step 6c: Prefer scraped FAQ pairs over Gemini-generated ones ---
+  if (contextualAssets && scrapedFaqPairs.length >= 2) {
+    contextualAssets.scraped_faq_pairs = scrapedFaqPairs;
+    contextualAssets.faq_html = scrapedFaqPairs
+      .map(p => `<h3>${p.q}</h3><p>${p.a}</p>`)
+      .join('\n');
+    console.log(`  [GEO] Using ${scrapedFaqPairs.length} scraped FAQ pairs for post ${id}`);
+  } else if (contextualAssets && scrapedFaqPairs.length > 0) {
+    // Keep partial scraped pairs for reference even if < 2 (Gemini FAQ still used)
+    contextualAssets.scraped_faq_pairs = scrapedFaqPairs;
+  }
 
   // --- Step 7: Build Specific Recommendations (Granular Scoring) ---
   const recommendations = generateRecommendations(contentSignals, brandInclusionRate, geoScore, practiceProfile, layoutMap);

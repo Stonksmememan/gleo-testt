@@ -650,13 +650,129 @@ const ScanCompleteModal = ( { onClose } ) => (
 );
 
 // ── Site Preview ─────────────────────────────────────────────────────────────
+const LLMS_PRACTICE_SECTIONS = [
+    '## About',
+    '## Practice Information',
+    '## Services',
+    '## Locations',
+    '## Providers',
+    '## Insurance Accepted',
+    '## Booking',
+    '## Patient Questions We Help Answer',
+];
+
+const MISSING_SECTION_LABELS = {
+    business_description: 'Business description',
+    services: 'Services',
+    providers: 'Provider information',
+    contact: 'Contact information',
+    insurance: 'Insurance accepted',
+    booking: 'Booking URL',
+};
+
+const formatConfidencePct = ( score ) => Math.round( ( score || 0 ) * 100 );
+
+const practiceProfileCompleteness = ( p ) => {
+    const loc0 = p?.locations?.[0] || {};
+    const checks = [
+        !!p?.practice_type,
+        !!p?.specialty,
+        ( p?.locations?.length || 0 ) > 0,
+        !!loc0.phone,
+        !!loc0.street,
+        !!loc0.city,
+        ( p?.providers?.length || 0 ) > 0,
+        ( p?.insurance_accepted?.length || 0 ) > 0,
+        !!p?.booking_url,
+        ( p?.target_queries?.length || 0 ) > 0,
+    ];
+    return Math.round( ( checks.filter( Boolean ).length / checks.length ) * 100 );
+};
+
+/** Decide tour copy: scraped site vs Practice Profile fallback for /llms.txt. */
+const buildLlmsTxtTourStep = ( llmsTxtText, practiceProfile, scrapeMeta = {} ) => {
+    const text = llmsTxtText || '';
+    const foundSections = LLMS_PRACTICE_SECTIONS.filter( ( s ) => text.includes( s ) );
+    const hasLocations = text.includes( '## Locations' );
+    const hasPhone = /- Phone:/.test( text );
+    const hasProviders = text.includes( '## Providers' );
+    const hasServices = text.includes( '## Services' );
+    const hasPatientQs = text.includes( '## Patient Questions' );
+    const scrapeScore = foundSections.length + ( hasPhone ? 1 : 0 );
+    const scrapeOk = scrapeMeta.can_generate_llms
+        || scrapeScore >= 3
+        || ( hasLocations && hasPhone && ( hasProviders || hasPatientQs || hasServices ) );
+    const profilePct = practiceProfileCompleteness( practiceProfile || {} );
+    const missing = ( scrapeMeta.missing_sections || [] ).map( ( k ) => MISSING_SECTION_LABELS[k] || k );
+    const missingNote = missing.length > 0
+        ? ` Some sections were omitted from /llms.txt and need your input: ${ missing.join( ', ' ) }.`
+        : '';
+
+    if ( scrapeOk && profilePct >= 40 ) {
+        return {
+            blurb: `Gleo built this from your live site first, then filled gaps from your saved Practice Profile.${ missingNote }`,
+            sourceBadge: 'Scraped + profile',
+            callout: missing.length > 0 ? { tone: 'info', text: `Complete these in Practice Profile: ${ missing.join( ', ' ) }.` } : null,
+        };
+    }
+    if ( scrapeOk ) {
+        return {
+            blurb: `Gleo auto-generated /llms.txt from your website — business info, services, locations, and providers.${ missingNote } Add Practice Profile fields only to override or fill gaps.`,
+            sourceBadge: 'Auto-generated',
+            callout: missing.length > 0 ? { tone: 'info', text: `These sections are missing — add them in Practice Profile: ${ missing.join( ', ' ) }.` } : null,
+        };
+    }
+    if ( profilePct >= 40 ) {
+        return {
+            blurb: 'Gleo could not find enough pages to auto-generate /llms.txt, so it is using your saved Practice Profile. Keep it updated when phone, hours, or providers change.',
+            sourceBadge: 'Practice Profile',
+            callout: {
+                tone: 'info',
+                text: 'Auto-scraping found fewer than 3 meaningful pages or could not determine your business identity. Practice Profile is the primary source.',
+            },
+        };
+    }
+    return {
+        blurb: 'Gleo could not auto-generate enough content from your site, and your Practice Profile is incomplete. Save locations, phone, services, and providers in Practice Profile to improve /llms.txt.',
+        sourceBadge: 'Needs profile',
+        callout: {
+            tone: 'warn',
+            text: 'Action needed: complete Practice Profile. Auto-generation only falls back to manual entry when fewer than 3 pages are found or business identity cannot be determined.',
+        },
+    };
+};
+
 const gleoPreviewContentRoot = ( doc ) => (
     doc.querySelector( '.entry-content, .wp-block-post-content, article .entry-content' ) ||
     doc.querySelector( 'main article, article.post, .wp-site-blocks' ) ||
     doc.body
 );
 
-const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied, appliedFixTypes = [], scanResult = {}, siteUrl = '' } ) => {
+/** Fetch a live site file bypassing browser and CDN caches (tour previews + open links). */
+const fetchLiveSiteFile = async ( urlBase, path, maxLen = null ) => {
+    const base = ( urlBase || '' ).replace( /\/$/, '' );
+    if ( ! base || ! path ) {
+        return null;
+    }
+    const url = `${ base }${ path }${ path.includes( '?' ) ? '&' : '?' }gleo_cb=${ Date.now() }`;
+    try {
+        const response = await fetch( url, { cache: 'no-store', credentials: 'same-origin' } );
+        if ( ! response.ok ) {
+            return null;
+        }
+        const text = await response.text();
+        return maxLen ? text.slice( 0, maxLen ) : text;
+    } catch ( _ ) {
+        return null;
+    }
+};
+
+const liveSiteFileUrl = ( urlBase, path ) => {
+    const base = ( urlBase || '' ).replace( /\/$/, '' );
+    return `${ base }${ path }${ path.includes( '?' ) ? '&' : '?' }gleo_cb=${ Date.now() }`;
+};
+
+const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied, appliedFixTypes = [], scanResult = {}, siteUrl = '', fixDetails = {} } ) => {
     const [ iframeKey, setIframeKey ] = useState( Date.now() );
     const [ iframeLoaded, setIframeLoaded ] = useState( false );
     const iframeRef = useRef( null );
@@ -740,37 +856,64 @@ const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied, appli
         const applied = new Set( appliedFixTypes );
         const urlBase = ( siteUrl || '' ).replace( /\/$/, '' );
 
-        // Fetch /llms.txt and /robots.txt to show file previews in the tour.
-        let llmsTxtText = null;
-        let robotsTxtText = null;
+        // Bust server-side llms.txt cache and load fresh profile metadata for tour copy.
+        let tourProfile = ( typeof gleoData !== 'undefined' && gleoData.practiceProfile ) ? gleoData.practiceProfile : {};
+        let tourScrapeMeta = ( typeof gleoData !== 'undefined' && gleoData.llmsScrapeMeta ) ? gleoData.llmsScrapeMeta : {};
         try {
-            const r = await fetch( urlBase + '/llms.txt' );
-            if ( r.ok ) llmsTxtText = ( await r.text() ).slice( 0, 700 );
+            const [ scrapeMeta, settings ] = await Promise.all( [
+                apiFetch( { path: '/gleo/v1/llms-scrape-meta' } ),
+                apiFetch( { path: '/wp/v2/settings' } ),
+            ] );
+            if ( scrapeMeta && typeof scrapeMeta === 'object' ) {
+                tourScrapeMeta = scrapeMeta;
+            }
+            if ( settings?.gleo_practice_profile ) {
+                try {
+                    tourProfile = { ...DEFAULT_PROFILE, ...JSON.parse( settings.gleo_practice_profile ) };
+                } catch ( _ ) {}
+            }
         } catch ( _ ) {}
+
+        // Fetch /llms.txt, /sitemap.xml, and /robots.txt to show file previews in the tour.
+        let llmsTxtText = await fetchLiveSiteFile( urlBase, '/llms.txt', 700 );
+        let sitemapXmlText = await fetchLiveSiteFile( urlBase, '/sitemap.xml', 700 );
+        let robotsTxtText = null;
         if ( applied.has( 'robots_txt_allow' ) ) {
-            try {
-                const r = await fetch( urlBase + '/robots.txt' );
-                if ( r.ok ) {
-                    const full = await r.text();
-                    const idx = full.indexOf( '# Gleo' );
-                    robotsTxtText = idx >= 0 ? full.slice( idx, idx + 500 ) : full.slice( 0, 500 );
-                }
-            } catch ( _ ) {}
+            const full = await fetchLiveSiteFile( urlBase, '/robots.txt' );
+            if ( full ) {
+                const idx = full.indexOf( '# Gleo' );
+                robotsTxtText = idx >= 0 ? full.slice( idx, idx + 500 ) : full.slice( 0, 500 );
+            }
         }
 
         const steps = [];
 
         // 1. /llms.txt — always present when Gleo is active; no specific fix required.
+        const llmsTour = buildLlmsTxtTourStep( llmsTxtText, tourProfile, tourScrapeMeta );
         steps.push( {
             title: '/llms.txt',
-            text: 'Gleo generates this file automatically. It gives AI crawlers a structured summary of your site, pages, and practice details so they can reference you accurately.',
+            text: llmsTour.blurb,
+            callout: llmsTour.callout,
+            sourceBadge: llmsTour.sourceBadge,
             mode: 'panel',
             previewText: llmsTxtText,
             linkUrl: urlBase + '/llms.txt',
+            linkPath: '/llms.txt',
             linkLabel: 'Open /llms.txt',
+            bustCacheOnOpen: true,
         } );
 
-        // 2. robots.txt — only shown if that fix was applied.
+        // 2. /sitemap.xml — always present; lists every indexable page for search engines and AI crawlers.
+        steps.push( {
+            title: '/sitemap.xml',
+            text: 'Gleo generates this sitemap automatically. Search engines and AI crawlers use it to discover all your indexable pages.',
+            mode: 'panel',
+            previewText: sitemapXmlText,
+            linkUrl: urlBase + '/sitemap.xml',
+            linkLabel: 'Open /sitemap.xml',
+        } );
+
+        // 3. robots.txt — only shown if that fix was applied.
         if ( applied.has( 'robots_txt_allow' ) ) {
             steps.push( {
                 title: 'robots.txt — AI crawler rules',
@@ -795,10 +938,12 @@ const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied, appli
 
         // 4. AI-readable summary — head-only meta, no visible block on the page.
         if ( applied.has( 'opening_summary' ) ) {
+            const overviewMeta = doc.querySelector( 'meta[name="gleo:ai-overview"]' )?.getAttribute( 'content' ) || null;
             steps.push( {
                 title: 'AI-readable summary',
                 text: FIX_CONFIG.opening_summary?.successMsg || 'A concise summary was saved for AI crawlers in page metadata.',
                 mode: 'panel',
+                previewText: overviewMeta ? `<meta name="gleo:ai-overview" content="${ overviewMeta }">` : null,
             } );
         }
 
@@ -811,16 +956,23 @@ const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied, appli
             } );
         }
 
-        // 6. FAQ — highlight .gleo-faq-wrap if in DOM, otherwise panel note.
+        // 7. FAQ — highlight .gleo-faq-wrap if in DOM, otherwise panel note.
         if ( applied.has( 'faq' ) || applied.has( 'answer_readiness' ) ) {
             const el = root.querySelector( '.gleo-faq-wrap' );
+            const scrapedPairs = scanResult?.contextual_assets?.scraped_faq_pairs;
+            const faqSource = ( scrapedPairs && scrapedPairs.length >= 2 )
+                ? 'Existing FAQ content from your page was structured into a Gleo accordion block.'
+                : ( FIX_CONFIG.faq?.successMsg || 'FAQ block added.' );
+            const faqPreview = ( scrapedPairs && scrapedPairs.length >= 2 )
+                ? scrapedPairs.slice( 0, 3 ).map( p => `Q: ${ p.q }` ).join( '\n' )
+                : null;
             steps.push( el
-                ? { title: 'FAQ block', text: FIX_CONFIG.faq?.successMsg || 'FAQ block added.', mode: 'highlight', el }
-                : { title: 'FAQ block', text: ( FIX_CONFIG.faq?.successMsg || 'FAQ block added.' ) + ' (Not visible in this preview — this can happen on page-builder sites.)', mode: 'panel' }
+                ? { title: 'FAQ block', text: faqSource, mode: 'highlight', el, previewText: faqPreview }
+                : { title: 'FAQ block', text: faqSource + ' (Not visible in this preview — this can happen on page-builder sites.)', mode: 'panel', previewText: faqPreview }
             );
         }
 
-        // 7. Statistics callout (manual input fix — block may not be present).
+        // 8. Statistics callout (manual input fix — block may not be present).
         if ( applied.has( 'authority' ) ) {
             const el = root.querySelector( '.gleo-stats-callout' );
             steps.push( el
@@ -829,7 +981,7 @@ const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied, appli
             );
         }
 
-        // 8. Sources & references (manual input fix — block may not be present).
+        // 9. Sources & references (manual input fix — block may not be present).
         if ( applied.has( 'credibility' ) ) {
             const el = root.querySelector( '.gleo-sources-block' );
             steps.push( el
@@ -838,7 +990,7 @@ const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied, appli
             );
         }
 
-        // 9. Content depth — appended paragraphs with no distinct wrapper class.
+        // 10. Content depth — appended paragraphs with no distinct wrapper class.
         if ( applied.has( 'content_depth' ) ) {
             steps.push( {
                 title: 'Expanded content',
@@ -847,16 +999,28 @@ const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied, appli
             } );
         }
 
-        // 10. Formatting / readability — in-place content edits, no wrapper class.
-        if ( applied.has( 'formatting' ) || applied.has( 'readability' ) ) {
-            const labels = [];
-            if ( applied.has( 'formatting' ) ) labels.push( 'converting dense paragraphs to lists' );
-            if ( applied.has( 'readability' ) ) labels.push( 'splitting long paragraphs' );
-            steps.push( {
-                title: 'Content polish',
-                text: `In-place edits were applied to the post content: ${ labels.join( ' and ' ) }.`,
-                mode: 'panel',
-            } );
+        // 11. Formatting — converted dense paragraphs to lists. Highlight .gleo-polish-list if present.
+        if ( applied.has( 'formatting' ) ) {
+            const el = root.querySelector( '.gleo-polish-list' );
+            const detail = fixDetails?.formatting?.lists_created
+                ? ` ${ fixDetails.formatting.lists_created } dense paragraph(s) converted.`
+                : '';
+            steps.push( el
+                ? { title: 'Add Lists', text: ( FIX_CONFIG.formatting?.successMsg || 'Dense paragraphs have been converted into bulleted lists.' ) + detail, mode: 'highlight', el }
+                : { title: 'Add Lists', text: ( FIX_CONFIG.formatting?.successMsg || 'Dense paragraphs have been converted into bulleted lists.' ) + detail, mode: 'panel' }
+            );
+        }
+
+        // 12. Readability — long paragraphs split. Highlight .gleo-polish-split if present.
+        if ( applied.has( 'readability' ) ) {
+            const el = root.querySelector( '.gleo-polish-split' );
+            const detail = fixDetails?.readability?.paragraphs_split
+                ? ` ${ fixDetails.readability.paragraphs_split } paragraph(s) split.`
+                : '';
+            steps.push( el
+                ? { title: 'Shorten Paragraphs', text: ( FIX_CONFIG.readability?.successMsg || 'Long paragraphs (80+ words) have been split into shorter chunks.' ) + detail, mode: 'highlight', el }
+                : { title: 'Shorten Paragraphs', text: ( FIX_CONFIG.readability?.successMsg || 'Long paragraphs (80+ words) have been split into shorter chunks.' ) + detail, mode: 'panel' }
+            );
         }
 
         if ( ! doc.getElementById( 'gleo-tour-styles' ) ) {
@@ -968,7 +1132,7 @@ const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied, appli
                         <button type="button" onClick={ () => { setShowTourPrompt( false ); setTourReplayUnlocked( true ); } } style={ { position: 'absolute', top: 12, right: 16, background: 'transparent', border: 'none', color: '#94a3b8', fontSize: 20, cursor: 'pointer' } }>×</button>
                         <div style={ { width: 44, height: 44, background: 'var(--gleo-accent-bg)', color: 'var(--gleo-accent)', borderRadius: 12, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 22, marginBottom: 16 } }>✨</div>
                         <h4 style={ { margin: '0 0 8px', fontSize: 18, color: '#0f172a', fontWeight: 800 } }>Review Gleo changes</h4>
-                        <p style={ { color: '#64748b', fontSize: 14, margin: '0 0 20px', lineHeight: 1.5 } }>Walk through exactly what was changed — visible content blocks and site-wide technical updates like schema and /llms.txt.</p>
+                        <p style={ { color: '#64748b', fontSize: 14, margin: '0 0 20px', lineHeight: 1.5 } }>Walk through exactly what was changed — visible content blocks and site-wide technical updates like schema, /sitemap.xml, and /llms.txt.</p>
                         <button className="gleo-btn gleo-btn-primary" type="button" onClick={ startTour } style={ { width: '100%', padding: '12px', fontSize: 14, fontWeight: 700, borderRadius: 12 } }>
                             Start Guided AI Tour
                         </button>
@@ -1004,6 +1168,11 @@ const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied, appli
                                         Site-wide
                                     </span>
                                 ) }
+                                { cur.sourceBadge && (
+                                    <span style={ { fontSize: 10, fontWeight: 700, color: '#6ee7b7', background: 'rgba(16, 185, 129, 0.12)', borderRadius: 6, padding: '2px 6px', letterSpacing: '0.04em', textTransform: 'uppercase' } }>
+                                        { cur.sourceBadge }
+                                    </span>
+                                ) }
                             </div>
                             <button type="button" onClick={ finishTourSession } style={ { background: 'transparent', border: 'none', color: '#64748b', fontSize: 24, cursor: 'pointer', padding: 0 } }>&times;</button>
                         </div>
@@ -1012,6 +1181,21 @@ const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied, appli
                             <p className="gleo-tour-step-blurb" style={ { color: '#94a3b8', margin: '0 0 16px', fontSize: 14, lineHeight: 1.55, fontWeight: 500 } }>
                                 { cur.text }
                             </p>
+                        ) : null }
+                        { cur.callout ? (
+                            <div style={ {
+                                marginBottom: 16,
+                                padding: '12px 14px',
+                                borderRadius: 12,
+                                background: cur.callout.tone === 'warn' ? 'rgba(251, 191, 36, 0.12)' : 'rgba(96, 165, 250, 0.12)',
+                                border: `1px solid ${ cur.callout.tone === 'warn' ? 'rgba(251, 191, 36, 0.35)' : 'rgba(96, 165, 250, 0.35)' }`,
+                                color: cur.callout.tone === 'warn' ? '#fcd34d' : '#93c5fd',
+                                fontSize: 13,
+                                lineHeight: 1.5,
+                                fontWeight: 500,
+                            } }>
+                                { cur.callout.text }
+                            </div>
                         ) : null }
                         { cur.schemaPayload && (
                             <div style={ { marginBottom: 16 } }>
@@ -1029,7 +1213,20 @@ const SitePreview = ( { url, onClose, onApplyAll, applyingAll, allApplied, appli
                         ) }
                         { cur.linkUrl && (
                             <div style={ { marginBottom: 16 } }>
-                                <a href={ cur.linkUrl } target="_blank" rel="noopener noreferrer" style={ { color: '#60a5fa', fontSize: 13, fontWeight: 600, textDecoration: 'none' } }>
+                                <a
+                                    href={ cur.bustCacheOnOpen ? liveSiteFileUrl( siteUrl, cur.linkPath || '/llms.txt' ) : cur.linkUrl }
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    onClick={ cur.bustCacheOnOpen ? ( e ) => {
+                                        e.preventDefault();
+                                        window.open(
+                                            liveSiteFileUrl( siteUrl, cur.linkPath || '/llms.txt' ),
+                                            '_blank',
+                                            'noopener,noreferrer'
+                                        );
+                                    } : undefined }
+                                    style={ { color: '#60a5fa', fontSize: 13, fontWeight: 600, textDecoration: 'none' } }
+                                >
                                     { cur.linkLabel || cur.linkUrl } ↗
                                 </a>
                             </div>
@@ -1130,6 +1327,9 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
                 const prev = new Set( base?.applied_fix_types || [] );
                 prev.add( fixType );
                 next.applied_fix_types = [ ...prev ];
+            }
+            if ( res.fix_details && typeof res.fix_details === 'object' ) {
+                next.fix_details = { ...( base?.fix_details || {} ), ...res.fix_details };
             }
             return next;
         } );
@@ -1852,7 +2052,8 @@ const GeoReportCard = ( { report, totalReportCards = 1, onReportUpdated } ) => {
                     onApplyAll={ handleApplyAll } applyingAll={ isApplyingAll } allApplied={ allAutoFixed }
                     appliedFixTypes={ Object.keys( appliedTypes ).filter( ft => appliedTypes[ ft ] ) }
                     scanResult={ result }
-                    siteUrl={ siteUrl }/>
+                    siteUrl={ siteUrl }
+                    fixDetails={ result?.fix_details || {} }/>
             ) }
 
             {builderSuggestionModal && (
@@ -1896,67 +2097,124 @@ const DAYS_OF_WEEK = ['monday','tuesday','wednesday','thursday','friday','saturd
 const DEFAULT_PROFILE = {
     practice_type: '',
     specialty: '',
-    locations: [{ label: '', street: '', city: '', state: '', zip: '', phone: '', hours: {} }],
+    locations: [{ label: '', street: '', city: '', state: '', zip: '', phone: '', email: '', hours: {} }],
     providers: [],
     insurance_accepted: [],
     booking_url: '',
     target_queries: [],
 };
 
-const profileCompleteness = (p) => {
-    const loc0 = p.locations?.[0] || {};
-    const checks = [
-        !!p.practice_type,
-        !!p.specialty,
-        p.locations?.length > 0,
-        !!loc0.phone,
-        !!loc0.street,
-        !!loc0.city,
-        p.providers?.length > 0,
-        p.insurance_accepted?.length > 0,
-        !!p.booking_url,
-        p.target_queries?.length > 0,
-    ];
-    return Math.round((checks.filter(Boolean).length / checks.length) * 100);
+const SCRAPED_FIELD_STYLE = {
+    background: 'rgba(59, 130, 246, 0.08)',
+    borderColor: 'rgba(59, 130, 246, 0.4)',
 };
+
+const profileFieldFromScrape = ( scrapedFields, path ) => {
+    if ( ! scrapedFields || scrapedFields.size === 0 ) {
+        return false;
+    }
+    if ( scrapedFields.has( path ) ) {
+        return true;
+    }
+    if ( path.startsWith( 'providers.' ) && scrapedFields.has( 'providers' ) ) {
+        return true;
+    }
+    return false;
+};
+
+const scrapedInputStyle = ( scrapedFields, path ) => (
+    profileFieldFromScrape( scrapedFields, path ) ? SCRAPED_FIELD_STYLE : undefined
+);
 
 const PracticeProfilePanel = ({ siteUrl }) => {
     const [profile, setProfile] = useState(DEFAULT_PROFILE);
     const [isSaving, setIsSaving] = useState(false);
+    const [isLoading, setIsLoading] = useState(true);
     const [saveStatus, setSaveStatus] = useState(null);
     const [insuranceInput, setInsuranceInput] = useState('');
+    const [scrapedFields, setScrapedFields] = useState(new Set());
+    const [scrapeMeta, setScrapeMeta] = useState(
+        ( typeof gleoData !== 'undefined' && gleoData.llmsScrapeMeta ) ? gleoData.llmsScrapeMeta : {}
+    );
+    const confidence = scrapeMeta.confidence || {};
+    const missingSections = scrapeMeta.missing_sections || [];
 
-    useEffect(() => {
-        apiFetch({ path: '/wp/v2/settings' }).then(s => {
-            if (s.gleo_practice_profile) {
-                try {
-                    const parsed = JSON.parse(s.gleo_practice_profile);
-                    setProfile({ ...DEFAULT_PROFILE, ...parsed });
-                    if (parsed.insurance_accepted) {
-                        setInsuranceInput(parsed.insurance_accepted.join(', '));
-                    }
-                } catch (_) {}
+    const clearScrapedPath = (path) => setScrapedFields((prev) => {
+        const next = new Set(prev);
+        next.delete(path);
+        if (path.startsWith('providers.')) {
+            next.delete('providers');
+        }
+        return next;
+    });
+
+    const applyProfileDraft = (payload) => {
+        if (payload?.profile) {
+            setProfile({ ...DEFAULT_PROFILE, ...payload.profile });
+            if (payload.profile.insurance_accepted?.length) {
+                setInsuranceInput(payload.profile.insurance_accepted.join(', '));
+            } else {
+                setInsuranceInput('');
             }
-        });
+        }
+        setScrapedFields(new Set(payload?.filled_from_scrape || []));
+        if (payload?.scrape_meta) {
+            setScrapeMeta(payload.scrape_meta);
+        }
+    };
+
+    const loadProfileDraft = useCallback(() => {
+        setIsLoading(true);
+        return apiFetch({ path: '/gleo/v1/practice-profile-draft' })
+            .then(applyProfileDraft)
+            .catch(() => apiFetch({ path: '/wp/v2/settings' }).then((s) => {
+                if (s.gleo_practice_profile) {
+                    try {
+                        const parsed = JSON.parse(s.gleo_practice_profile);
+                        setProfile({ ...DEFAULT_PROFILE, ...parsed });
+                        if (parsed.insurance_accepted) {
+                            setInsuranceInput(parsed.insurance_accepted.join(', '));
+                        }
+                    } catch (_) {}
+                }
+            }))
+            .finally(() => setIsLoading(false));
     }, []);
 
-    const update = (key, val) => setProfile(p => ({ ...p, [key]: val }));
+    const refreshScrapeMeta = () => apiFetch({ path: '/gleo/v1/llms-scrape-meta' })
+        .then(meta => { if ( meta && typeof meta === 'object' ) setScrapeMeta( meta ); })
+        .catch(() => {});
 
-    const updateLoc = (idx, key, val) => setProfile(p => {
-        const locs = [...(p.locations || [])];
-        locs[idx] = { ...locs[idx], [key]: val };
-        return { ...p, locations: locs };
-    });
+    useEffect(() => {
+        loadProfileDraft();
+    }, [loadProfileDraft]);
 
-    const updateLocHours = (idx, day, val) => setProfile(p => {
-        const locs = [...(p.locations || [])];
-        locs[idx] = { ...locs[idx], hours: { ...(locs[idx].hours || {}), [day]: val } };
-        return { ...p, locations: locs };
-    });
+    const update = (key, val) => {
+        clearScrapedPath(key);
+        setProfile(p => ({ ...p, [key]: val }));
+    };
+
+    const updateLoc = (idx, key, val) => {
+        clearScrapedPath(`locations.${idx}.${key}`);
+        setProfile(p => {
+            const locs = [...(p.locations || [])];
+            locs[idx] = { ...locs[idx], [key]: val };
+            return { ...p, locations: locs };
+        });
+    };
+
+    const updateLocHours = (idx, day, val) => {
+        clearScrapedPath(`locations.${idx}.hours.${day}`);
+        setProfile(p => {
+            const locs = [...(p.locations || [])];
+            locs[idx] = { ...locs[idx], hours: { ...(locs[idx].hours || {}), [day]: val } };
+            return { ...p, locations: locs };
+        });
+    };
 
     const addLocation = () => setProfile(p => ({
         ...p,
-        locations: [...(p.locations || []), { label: '', street: '', city: '', state: '', zip: '', phone: '', hours: {} }],
+        locations: [...(p.locations || []), { label: '', street: '', city: '', state: '', zip: '', phone: '', email: '', hours: {} }],
     }));
 
     const removeLocation = (idx) => setProfile(p => ({
@@ -1964,11 +2222,14 @@ const PracticeProfilePanel = ({ siteUrl }) => {
         locations: (p.locations || []).filter((_, i) => i !== idx),
     }));
 
-    const updateProvider = (idx, key, val) => setProfile(p => {
-        const provs = [...(p.providers || [])];
-        provs[idx] = { ...provs[idx], [key]: val };
-        return { ...p, providers: provs };
-    });
+    const updateProvider = (idx, key, val) => {
+        clearScrapedPath(`providers.${idx}.${key}`);
+        setProfile(p => {
+            const provs = [...(p.providers || [])];
+            provs[idx] = { ...provs[idx], [key]: val };
+            return { ...p, providers: provs };
+        });
+    };
 
     const addProvider = () => setProfile(p => ({
         ...p,
@@ -1980,11 +2241,14 @@ const PracticeProfilePanel = ({ siteUrl }) => {
         providers: (p.providers || []).filter((_, i) => i !== idx),
     }));
 
-    const updateQuery = (idx, val) => setProfile(p => {
-        const qs = [...(p.target_queries || [])];
-        qs[idx] = val;
-        return { ...p, target_queries: qs };
-    });
+    const updateQuery = (idx, val) => {
+        clearScrapedPath('target_queries');
+        setProfile(p => {
+            const qs = [...(p.target_queries || [])];
+            qs[idx] = val;
+            return { ...p, target_queries: qs };
+        });
+    };
 
     const addQuery = () => setProfile(p => ({
         ...p,
@@ -1997,6 +2261,7 @@ const PracticeProfilePanel = ({ siteUrl }) => {
     }));
 
     const handleInsuranceBlur = () => {
+        clearScrapedPath('insurance_accepted');
         const tags = insuranceInput.split(',').map(s => s.trim()).filter(Boolean);
         update('insurance_accepted', tags);
     };
@@ -2011,7 +2276,7 @@ const PracticeProfilePanel = ({ siteUrl }) => {
             path: '/wp/v2/settings',
             method: 'POST',
             data: { gleo_practice_profile: JSON.stringify(toSave) },
-        }).then(() => {
+        }).then(() => refreshScrapeMeta()).then(() => loadProfileDraft()).then(() => {
             setIsSaving(false);
             setSaveStatus({ type: 'success', message: 'Practice profile saved.' });
             setTimeout(() => setSaveStatus(null), 3000);
@@ -2021,19 +2286,20 @@ const PracticeProfilePanel = ({ siteUrl }) => {
         });
     };
 
-    const pct = profileCompleteness(profile);
+    const pct = practiceProfileCompleteness(profile);
     const pctColor = pct >= 80 ? 'var(--green, #22c55e)' : pct >= 50 ? 'var(--blue)' : 'var(--fg-muted)';
+    const generationLabel = scrapeMeta.generation_mode === 'auto' ? 'Auto-generated from site' : 'Manual Practice Profile needed';
 
     return (
         <div>
             <div className="gleo-page-header">
                 <div>
                     <h1>Practice Profile</h1>
-                    <p className="gleo-page-subtitle">Help AI assistants recommend your practice for local patient questions</p>
+                    <p className="gleo-page-subtitle">Overrides and fills gaps in auto-generated /llms.txt content</p>
                 </div>
                 <div className="gleo-header-actions">
                     {siteUrl && (
-                        <a href={siteUrl + '/llms.txt'} target="_blank" rel="noopener noreferrer"
+                        <a href={siteUrl + '/llms.txt?t=' + Date.now()} target="_blank" rel="noopener noreferrer"
                             className="gleo-btn gleo-btn-outline" style={{ fontSize: 12 }}>
                             View /llms.txt
                         </a>
@@ -2044,6 +2310,69 @@ const PracticeProfilePanel = ({ siteUrl }) => {
             {saveStatus && (
                 <div className={`gleo-notice ${saveStatus.type}`}>{saveStatus.message}</div>
             )}
+
+            {scrapedFields.size > 0 && (
+                <div className="gleo-notice" style={{ marginBottom: 16, background: 'rgba(59, 130, 246, 0.08)', borderColor: 'rgba(59, 130, 246, 0.25)' }}>
+                    <strong>Auto-filled from your website:</strong> highlighted fields were detected from your live site.
+                    {' '}Review them, fix anything that looks wrong, then save. Empty fields still need your input.
+                </div>
+            )}
+
+            {isLoading ? (
+                <div className="gleo-card" style={{ marginBottom: 20 }}>
+                    <div className="gleo-card-body" style={{ padding: '18px', color: 'var(--fg-muted)', fontSize: 13 }}>
+                        Loading profile and scanning your site for practice information…
+                    </div>
+                </div>
+            ) : null}
+
+            {/* Scrape status + confidence */}
+            <div className="gleo-card" style={{ marginBottom: 20 }}>
+                <div className="gleo-card-body" style={{ padding: '14px 18px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+                        <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>/llms.txt generation</span>
+                        <span style={{
+                            fontSize: 11, fontWeight: 600, padding: '2px 8px', borderRadius: 4,
+                            background: scrapeMeta.can_generate_llms ? 'rgba(34,197,94,0.12)' : 'rgba(245,158,11,0.12)',
+                            color: scrapeMeta.can_generate_llms ? '#16a34a' : '#d97706',
+                        }}>
+                            {generationLabel}
+                        </span>
+                    </div>
+                    {scrapeMeta.pages_discovered > 0 && (
+                        <p style={{ fontSize: 12, color: 'var(--fg-muted)', margin: '0 0 10px' }}>
+                            Analyzed {scrapeMeta.pages_discovered} page{scrapeMeta.pages_discovered !== 1 ? 's' : ''} from your live site.
+                        </p>
+                    )}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10 }}>
+                        {[
+                            ['Business description', confidence.business_description],
+                            ['Services', confidence.services],
+                            ['Providers', confidence.providers],
+                            ['Contact', confidence.contact],
+                        ].map(([label, score]) => (
+                            <div key={label}>
+                                <div style={{ fontSize: 11, color: 'var(--fg-muted)', marginBottom: 4 }}>{label}</div>
+                                <div style={{ background: 'var(--border)', borderRadius: 4, height: 5, overflow: 'hidden' }}>
+                                    <div style={{
+                                        width: `${formatConfidencePct(score)}%`, height: '100%',
+                                        background: formatConfidencePct(score) >= 70 ? '#22c55e' : formatConfidencePct(score) >= 40 ? 'var(--blue)' : '#f59e0b',
+                                        borderRadius: 4,
+                                    }} />
+                                </div>
+                                <div style={{ fontSize: 11, color: 'var(--fg-mid)', marginTop: 2 }}>{formatConfidencePct(score)}% confidence</div>
+                            </div>
+                        ))}
+                    </div>
+                    {missingSections.length > 0 && (
+                        <div className="gleo-notice warn" style={{ marginTop: 12, marginBottom: 0 }}>
+                            <strong>Missing from /llms.txt:</strong>{' '}
+                            {missingSections.map(k => MISSING_SECTION_LABELS[k] || k).join(', ')}.
+                            {' '}Fill in the matching fields below to complete your file.
+                        </div>
+                    )}
+                </div>
+            </div>
 
             {/* Completeness meter */}
             <div className="gleo-card" style={{ marginBottom: 20 }}>
@@ -2069,6 +2398,7 @@ const PracticeProfilePanel = ({ siteUrl }) => {
                 <div className="gleo-field">
                     <label>Practice Type</label>
                     <select className="gleo-input" value={profile.practice_type}
+                        style={scrapedInputStyle(scrapedFields, 'practice_type')}
                         onChange={e => update('practice_type', e.target.value)}>
                         <option value="">— Select type —</option>
                         <option value="dentist">Dental Practice</option>
@@ -2081,6 +2411,7 @@ const PracticeProfilePanel = ({ siteUrl }) => {
                     <label>Specialty</label>
                     <input className="gleo-input" type="text"
                         placeholder="e.g. General Dentistry, Family Medicine"
+                        style={scrapedInputStyle(scrapedFields, 'specialty')}
                         value={profile.specialty}
                         onChange={e => update('specialty', e.target.value)} />
                 </div>
@@ -2088,6 +2419,7 @@ const PracticeProfilePanel = ({ siteUrl }) => {
                     <label>Booking URL</label>
                     <input className="gleo-input" type="url"
                         placeholder="https://yoursite.com/book"
+                        style={scrapedInputStyle(scrapedFields, 'booking_url')}
                         value={profile.booking_url}
                         onChange={e => update('booking_url', e.target.value)} />
                 </div>
@@ -2110,34 +2442,46 @@ const PracticeProfilePanel = ({ siteUrl }) => {
                         <div className="gleo-field">
                             <label>Office Name / Label</label>
                             <input className="gleo-input" type="text" placeholder="Main Office"
+                                style={scrapedInputStyle(scrapedFields, `locations.${idx}.label`)}
                                 value={loc.label || ''} onChange={e => updateLoc(idx, 'label', e.target.value)} />
                         </div>
                         <div className="gleo-field">
                             <label>Street Address</label>
                             <input className="gleo-input" type="text" placeholder="123 Main St"
+                                style={scrapedInputStyle(scrapedFields, `locations.${idx}.street`)}
                                 value={loc.street || ''} onChange={e => updateLoc(idx, 'street', e.target.value)} />
                         </div>
                         <div style={{ display: 'grid', gridTemplateColumns: '1fr 80px 100px', gap: 10 }}>
                             <div className="gleo-field" style={{ margin: 0 }}>
                                 <label>City</label>
                                 <input className="gleo-input" type="text" placeholder="Austin"
+                                    style={scrapedInputStyle(scrapedFields, `locations.${idx}.city`)}
                                     value={loc.city || ''} onChange={e => updateLoc(idx, 'city', e.target.value)} />
                             </div>
                             <div className="gleo-field" style={{ margin: 0 }}>
                                 <label>State</label>
                                 <input className="gleo-input" type="text" placeholder="TX"
+                                    style={scrapedInputStyle(scrapedFields, `locations.${idx}.state`)}
                                     value={loc.state || ''} onChange={e => updateLoc(idx, 'state', e.target.value)} />
                             </div>
                             <div className="gleo-field" style={{ margin: 0 }}>
                                 <label>ZIP</label>
                                 <input className="gleo-input" type="text" placeholder="78701"
+                                    style={scrapedInputStyle(scrapedFields, `locations.${idx}.zip`)}
                                     value={loc.zip || ''} onChange={e => updateLoc(idx, 'zip', e.target.value)} />
                             </div>
                         </div>
                         <div className="gleo-field">
                             <label>Phone</label>
                             <input className="gleo-input" type="tel" placeholder="+1-512-555-0100"
+                                style={scrapedInputStyle(scrapedFields, `locations.${idx}.phone`)}
                                 value={loc.phone || ''} onChange={e => updateLoc(idx, 'phone', e.target.value)} />
+                        </div>
+                        <div className="gleo-field">
+                            <label>Email</label>
+                            <input className="gleo-input" type="email" placeholder="hello@yourpractice.com"
+                                style={scrapedInputStyle(scrapedFields, `locations.${idx}.email`)}
+                                value={loc.email || ''} onChange={e => updateLoc(idx, 'email', e.target.value)} />
                         </div>
                         <div className="gleo-field" style={{ marginBottom: 0 }}>
                             <label>Office Hours</label>
@@ -2147,7 +2491,7 @@ const PracticeProfilePanel = ({ siteUrl }) => {
                                         <span style={{ fontSize: 12, color: 'var(--fg-mid)', textTransform: 'capitalize' }}>{day}</span>
                                         <input className="gleo-input" type="text"
                                             placeholder={day === 'saturday' || day === 'sunday' ? 'Closed' : '9:00 AM - 5:00 PM'}
-                                            style={{ padding: '4px 8px', fontSize: 12 }}
+                                            style={{ padding: '4px 8px', fontSize: 12, ...scrapedInputStyle(scrapedFields, `locations.${idx}.hours.${day}`) }}
                                             value={(loc.hours || {})[day] || ''}
                                             onChange={e => updateLocHours(idx, day, e.target.value)} />
                                     </React.Fragment>
@@ -2172,16 +2516,19 @@ const PracticeProfilePanel = ({ siteUrl }) => {
                         <div className="gleo-field" style={{ margin: 0 }}>
                             {idx === 0 && <label>Name</label>}
                             <input className="gleo-input" type="text" placeholder="Dr. Jane Smith"
+                                style={scrapedInputStyle(scrapedFields, `providers.${idx}.name`)}
                                 value={prov.name || ''} onChange={e => updateProvider(idx, 'name', e.target.value)} />
                         </div>
                         <div className="gleo-field" style={{ margin: 0 }}>
                             {idx === 0 && <label>Credentials</label>}
                             <input className="gleo-input" type="text" placeholder="DDS"
+                                style={scrapedInputStyle(scrapedFields, `providers.${idx}.credentials`)}
                                 value={prov.credentials || ''} onChange={e => updateProvider(idx, 'credentials', e.target.value)} />
                         </div>
                         <div className="gleo-field" style={{ margin: 0 }}>
                             {idx === 0 && <label>Specialty</label>}
                             <input className="gleo-input" type="text" placeholder="General Dentistry"
+                                style={scrapedInputStyle(scrapedFields, `providers.${idx}.specialty`)}
                                 value={prov.specialty || ''} onChange={e => updateProvider(idx, 'specialty', e.target.value)} />
                         </div>
                         <button type="button" onClick={() => removeProvider(idx)}
@@ -2205,6 +2552,7 @@ const PracticeProfilePanel = ({ siteUrl }) => {
                     <label>Plans (comma-separated)</label>
                     <input className="gleo-input" type="text"
                         placeholder="Delta Dental, Cigna, Aetna, United Healthcare"
+                        style={scrapedInputStyle(scrapedFields, 'insurance_accepted')}
                         value={insuranceInput}
                         onChange={e => setInsuranceInput(e.target.value)}
                         onBlur={handleInsuranceBlur} />
@@ -2228,6 +2576,7 @@ const PracticeProfilePanel = ({ siteUrl }) => {
                                 idx === 1 ? 'how much does teeth cleaning cost' :
                                 'do you accept Delta Dental insurance'
                             }
+                            style={scrapedInputStyle(scrapedFields, 'target_queries')}
                             value={q}
                             onChange={e => updateQuery(idx, e.target.value)}
                             style={{ flex: 1 }} />

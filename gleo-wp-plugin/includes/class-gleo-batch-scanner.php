@@ -329,6 +329,10 @@ class Gleo_Batch_Scanner {
                 $brand_rate = isset( $result['data']['brand_inclusion_rate'] ) ? $result['data']['brand_inclusion_rate'] : 0;
                 Gleo_Analytics::log_scan( $result['id'], $geo_score, $brand_rate );
             }
+
+            if ( class_exists( 'Gleo_Llms_Scraper' ) ) {
+                Gleo_Llms_Scraper::invalidate_cache();
+            }
         }
 
 		return rest_ensure_response( array( 'success' => true ) );

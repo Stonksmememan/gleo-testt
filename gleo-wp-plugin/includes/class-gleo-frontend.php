@@ -1422,24 +1422,31 @@ CSS;
 			return;
 		}
 
-		$plain = array( 'Gleo_Schema', 'plain_text' );
-		$meta  = Gleo_Schema::get_site_metadata();
+		$plain   = array( 'Gleo_Schema', 'plain_text' );
+		$meta    = Gleo_Schema::get_site_metadata();
+		$merged  = class_exists( 'Gleo_Practice_Profile' ) ? Gleo_Practice_Profile::get_merged_for_llms() : array();
+		$site_name = ! empty( $merged['business_name'] ) ? $merged['business_name'] : $meta['name'];
+		$site_desc = ! empty( $merged['business_description'] ) ? $merged['business_description'] : $meta['description'];
 
 		header( 'Content-Type: text/plain; charset=utf-8' );
-		header( 'Cache-Control: public, max-age=86400' );
+		if ( isset( $_GET['gleo_cb'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			header( 'Cache-Control: no-store, no-cache, must-revalidate' );
+		} else {
+			header( 'Cache-Control: public, max-age=300, must-revalidate' );
+		}
 		header( 'X-Robots-Tag: noindex' );
 
-		echo '# ' . call_user_func( $plain, $meta['name'] ) . "\n";
-		if ( '' !== $meta['description'] ) {
-			echo '> ' . call_user_func( $plain, $meta['description'] ) . "\n";
+		echo '# ' . call_user_func( $plain, $site_name ) . "\n";
+		if ( '' !== $site_desc ) {
+			echo '> ' . call_user_func( $plain, $site_desc ) . "\n";
 		}
 		echo "\n";
 		echo 'URL: ' . esc_url_raw( $meta['url'] ) . "\n";
 		echo 'Sitemap: ' . esc_url_raw( home_url( '/sitemap.xml' ) ) . "\n\n";
 
-		// Practice profile sections (Phase 2: dental/medical identity for AI crawlers)
+		// Site identity sections — practice profile overrides; scraped site data fills gaps.
 		if ( class_exists( 'Gleo_Practice_Profile' ) ) {
-			$practice_sections = Gleo_Practice_Profile::to_llms_sections();
+			$practice_sections = Gleo_Practice_Profile::to_llms_sections( $merged );
 			if ( '' !== $practice_sections ) {
 				echo $practice_sections; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
 			}
@@ -1447,6 +1454,34 @@ CSS;
 
 		echo "## Key Pages\n\n";
 		echo '- Home: ' . esc_url_raw( home_url( '/' ) ) . "\n";
+
+		$listed_urls = array( trailingslashit( home_url( '/' ) ) => true );
+
+		// Prefer importance-scored page summaries from scraper.
+		if ( ! empty( $merged['page_summaries'] ) && is_array( $merged['page_summaries'] ) ) {
+			$summaries = $merged['page_summaries'];
+			usort(
+				$summaries,
+				static function ( $a, $b ) {
+					return (int) ( $b['score'] ?? 0 ) - (int) ( $a['score'] ?? 0 );
+				}
+			);
+			foreach ( array_slice( $summaries, 0, 12 ) as $ps ) {
+				if ( empty( $ps['url'] ) || empty( $ps['title'] ) ) {
+					continue;
+				}
+				$key = trailingslashit( $ps['url'] );
+				if ( isset( $listed_urls[ $key ] ) ) {
+					continue;
+				}
+				$listed_urls[ $key ] = true;
+				$line = '- ' . call_user_func( $plain, $ps['title'] ) . ': ' . esc_url_raw( $ps['url'] );
+				if ( ! empty( $ps['summary'] ) ) {
+					$line .= ' — ' . call_user_func( $plain, $ps['summary'] );
+				}
+				echo $line . "\n";
+			}
+		}
 
 		$key_pages = get_posts(
 			array(
@@ -1461,7 +1496,13 @@ CSS;
 			if ( ! Gleo_Schema::is_post_indexable( $page ) ) {
 				continue;
 			}
-			echo '- ' . call_user_func( $plain, $page->post_title ) . ': ' . esc_url_raw( get_permalink( $page ) ) . "\n";
+			$link = get_permalink( $page );
+			$key  = trailingslashit( $link );
+			if ( isset( $listed_urls[ $key ] ) ) {
+				continue;
+			}
+			$listed_urls[ $key ] = true;
+			echo '- ' . call_user_func( $plain, $page->post_title ) . ': ' . esc_url_raw( $link ) . "\n";
 		}
 
 		$key_posts = get_posts(
@@ -1477,14 +1518,20 @@ CSS;
 			if ( ! Gleo_Schema::is_post_indexable( $post ) ) {
 				continue;
 			}
-			echo '- ' . call_user_func( $plain, $post->post_title ) . ': ' . esc_url_raw( get_permalink( $post ) ) . "\n";
+			$link = get_permalink( $post );
+			$key  = trailingslashit( $link );
+			if ( isset( $listed_urls[ $key ] ) ) {
+				continue;
+			}
+			$listed_urls[ $key ] = true;
+			echo '- ' . call_user_func( $plain, $post->post_title ) . ': ' . esc_url_raw( $link ) . "\n";
 		}
 		echo "\n";
 
 		echo "## Guidance for LLMs\n\n";
 		echo "- Prefer the homepage and key pages above for site-wide context.\n";
-		if ( class_exists( 'Gleo_Practice_Profile' ) && Gleo_Practice_Profile::is_set() ) {
-			echo "- Use the Practice Information, Locations, and Providers sections for local and medical intent queries.\n";
+		if ( class_exists( 'Gleo_Practice_Profile' ) && Gleo_Practice_Profile::has_llms_context( $merged ) ) {
+			echo "- Use the About, Services, Locations, and Providers sections for local and medical intent queries.\n";
 			echo "- Patient Questions We Help Answer lists the queries this practice is optimized to answer.\n";
 		} else {
 			echo "- Article summaries below reflect the site's primary educational content.\n";
@@ -3462,6 +3509,7 @@ CSS;
 		$geo_score_out        = null;
 		$content_signals_out  = null;
 		$applied_fix_types    = array();
+		$fix_details          = array();
 
 		// ── Phase 4: Page Builder Safety ─────────────────────────────────────────
 		// Tier A (meta/head): always apply normally — no post_content involved.
@@ -3627,10 +3675,11 @@ CSS;
 
 			case 'formatting':
 				// Convert the first long paragraph (>50 words) that doesn't contain a list into a bullet list
-				$formatting_before = $content;
-				$content           = preg_replace_callback(
+				$formatting_before  = $content;
+				$formatting_created = 0;
+				$content            = preg_replace_callback(
 					'/<p>([^<]{200,})<\/p>/i',
-					function( $matches ) {
+					function( $matches ) use ( &$formatting_created ) {
 						$text      = $matches[1];
 						$sentences = preg_split( '/(?<=[.!?])\s+/', trim( $text ) );
 						if ( count( $sentences ) < 2 ) {
@@ -3643,22 +3692,25 @@ CSS;
 								$items .= "<!-- wp:list-item -->\n<li>{$s}</li>\n<!-- /wp:list-item -->\n";
 							}
 						}
-						return "<!-- wp:list -->\n<ul class=\"wp-block-list\">\n{$items}</ul>\n<!-- /wp:list -->";
+						++$formatting_created;
+						return "<!-- wp:list -->\n<ul class=\"wp-block-list gleo-polish gleo-polish-list\">\n{$items}</ul>\n<!-- /wp:list -->";
 					},
 					$content,
 					1
 				);
 				if ( $content !== $formatting_before ) {
 					$modified = true;
+					$fix_details['formatting'] = array( 'lists_created' => $formatting_created );
 				}
 				break;
 
 			case 'readability':
 				// Split paragraphs longer than 80 words into two
 				$readability_before = $content;
+				$readability_splits = 0;
 				$content            = preg_replace_callback(
 					'/<p>(.*?)<\/p>/is',
-					function( $matches ) {
+					function( $matches ) use ( &$readability_splits ) {
 						$text  = $matches[1];
 						$words = preg_split( '/\s+/', trim( $text ) );
 						if ( count( $words ) <= 80 ) {
@@ -3667,12 +3719,14 @@ CSS;
 						$mid    = (int) ceil( count( $words ) / 2 );
 						$first  = implode( ' ', array_slice( $words, 0, $mid ) );
 						$second = implode( ' ', array_slice( $words, $mid ) );
-						return "<p>{$first}</p>\n\n<p>{$second}</p>";
+						++$readability_splits;
+						return "<p class=\"gleo-polish gleo-polish-split\">{$first}</p>\n\n<p class=\"gleo-polish gleo-polish-split\">{$second}</p>";
 					},
 					$content
 				);
 				if ( $content !== $readability_before ) {
 					$modified = true;
+					$fix_details['readability'] = array( 'paragraphs_split' => $readability_splits );
 				}
 				break;
 
@@ -3681,8 +3735,19 @@ CSS;
 				// Build accordion FAQ — merges former Q&A into FAQ
 				$pairs = array();
 
-				// First, try to get Q&A pairs from contextual_assets (answer_readiness data)
-				if ( ! empty( $contextual_assets['qa_html'] ) ) {
+				// Highest priority: scraped FAQ pairs from the live page (no AI hallucination risk).
+				if ( ! empty( $contextual_assets['scraped_faq_pairs'] ) && is_array( $contextual_assets['scraped_faq_pairs'] ) ) {
+					foreach ( $contextual_assets['scraped_faq_pairs'] as $spair ) {
+						$q = wp_strip_all_tags( $spair['q'] ?? '' );
+						$a = wp_strip_all_tags( $spair['a'] ?? '' );
+						if ( '' !== $q && '' !== $a ) {
+							$pairs[] = array( 'q' => $q, 'a' => $a );
+						}
+					}
+				}
+
+				// Second priority: Q&A pairs from contextual_assets (answer_readiness data)
+				if ( empty( $pairs ) && ! empty( $contextual_assets['qa_html'] ) ) {
 					preg_match_all( '/<strong>(.*?)<\/strong>\s*<\/p>\s*<p>(.*?)<\/p>/si', $contextual_assets['qa_html'], $qm );
 					if ( ! empty( $qm[1] ) ) {
 						foreach ( $qm[1] as $idx => $q ) {
@@ -3694,10 +3759,10 @@ CSS;
 					}
 				}
 
-			// Then add FAQ pairs from contextual_assets.
+			// Third priority: Gemini-generated FAQ pairs from contextual_assets.
 			// When the AI produced a question but no answer, extract a relevant sentence from the
 			// post content rather than injecting a generic placeholder.
-			if ( ! empty( $contextual_assets['faq_html'] ) ) {
+			if ( empty( $pairs ) && ! empty( $contextual_assets['faq_html'] ) ) {
 				preg_match_all( '/<h3[^>]*>(.*?)<\/h3>\s*(?:<p[^>]*>(.*?)<\/p>)?/si', $contextual_assets['faq_html'], $fm );
 				foreach ( $fm[1] as $idx => $q ) {
 					$question = wp_strip_all_tags( $q );
@@ -3976,6 +4041,13 @@ CSS;
 			$geo_score_out            = (int) $result_data['geo_score'];
 			$content_signals_out      = $result_data['content_signals'];
 			$applied_fix_types        = $result_data['applied_fix_types'];
+			// Persist fix_details (e.g. lists_created, paragraphs_split) into scan result.
+			if ( ! empty( $fix_details ) ) {
+				if ( ! isset( $result_data['fix_details'] ) || ! is_array( $result_data['fix_details'] ) ) {
+					$result_data['fix_details'] = array();
+				}
+				$result_data['fix_details'] = array_merge( $result_data['fix_details'], $fix_details );
+			}
 			$wpdb->update(
 				$table_name,
 				array( 'scan_result' => wp_json_encode( $result_data ) ),
@@ -3991,6 +4063,7 @@ CSS;
 			'geo_score'         => $geo_score_out,
 			'content_signals'   => $content_signals_out,
 			'applied_fix_types' => $applied_fix_types,
+			'fix_details'       => ! empty( $fix_details ) ? $fix_details : null,
 			'snapshot_id'       => $snapshot_id ?: null,
 			'can_undo'          => ! empty( $snapshot_id ),
 		) );

@@ -273,6 +273,7 @@ function gleo_sanitize_practice_profile_json( $value ) {
 				'state'  => sanitize_text_field( (string) ( $loc['state']  ?? '' ) ),
 				'zip'    => sanitize_text_field( (string) ( $loc['zip']    ?? '' ) ),
 				'phone'  => sanitize_text_field( (string) ( $loc['phone']  ?? '' ) ),
+				'email'  => sanitize_email( (string) ( $loc['email']  ?? '' ) ),
 				'hours'  => array(),
 			);
 			if ( ! empty( $loc['hours'] ) && is_array( $loc['hours'] ) ) {
@@ -326,6 +327,63 @@ function gleo_sanitize_practice_profile_json( $value ) {
 	return wp_json_encode( $out );
 }
 
+add_action( 'rest_api_init', 'gleo_register_llms_scrape_meta_route' );
+/**
+ * REST route for fresh /llms.txt scrape metadata (used after Practice Profile save).
+ */
+function gleo_register_llms_scrape_meta_route() {
+	register_rest_route(
+		'gleo/v1',
+		'/llms-scrape-meta',
+		array(
+			'methods'             => 'GET',
+			'callback'            => 'gleo_rest_llms_scrape_meta',
+			'permission_callback' => static function () {
+				return current_user_can( 'manage_options' );
+			},
+		)
+	);
+
+	register_rest_route(
+		'gleo/v1',
+		'/practice-profile-draft',
+		array(
+			'methods'             => 'GET',
+			'callback'            => 'gleo_rest_practice_profile_draft',
+			'permission_callback' => static function () {
+				return current_user_can( 'manage_options' );
+			},
+		)
+	);
+}
+
+/**
+ * @return WP_REST_Response
+ */
+function gleo_rest_llms_scrape_meta() {
+	if ( class_exists( 'Gleo_Llms_Scraper' ) ) {
+		Gleo_Llms_Scraper::invalidate_cache();
+		return rest_ensure_response( Gleo_Llms_Scraper::get_scrape_metadata() );
+	}
+	return rest_ensure_response( array() );
+}
+
+/**
+ * @return WP_REST_Response
+ */
+function gleo_rest_practice_profile_draft() {
+	if ( class_exists( 'Gleo_Practice_Profile' ) ) {
+		return rest_ensure_response( Gleo_Practice_Profile::get_editor_payload() );
+	}
+	return rest_ensure_response(
+		array(
+			'profile'            => array(),
+			'filled_from_scrape' => array(),
+			'scrape_meta'        => array(),
+		)
+	);
+}
+
 /**
  * Sanitize JSON array of social profile URLs for gleo_social_links.
  *
@@ -357,6 +415,7 @@ function gleo_sanitize_social_links_json( $value ) {
 
 // Include API Client & Modules
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-gleo-practice-profile.php';
+require_once plugin_dir_path( __FILE__ ) . 'includes/class-gleo-llms-scraper.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-gleo-schema.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-gleo-sitemap.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-gleo-api-client.php';
@@ -365,6 +424,35 @@ require_once plugin_dir_path( __FILE__ ) . 'includes/class-gleo-optimize.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-gleo-frontend.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-gleo-analytics.php';
 require_once plugin_dir_path( __FILE__ ) . 'includes/class-gleo-tracking.php';
+
+/**
+ * Invalidate cached llms.txt scrape context when site content or profile changes.
+ */
+add_action( 'update_option_gleo_practice_profile', 'gleo_invalidate_llms_cache' );
+add_action( 'save_post', 'gleo_maybe_invalidate_llms_cache_on_save', 20, 3 );
+function gleo_invalidate_llms_cache() {
+	if ( class_exists( 'Gleo_Llms_Scraper' ) ) {
+		Gleo_Llms_Scraper::invalidate_cache();
+	}
+}
+
+/**
+ * @param int     $post_id Post ID.
+ * @param WP_Post $post    Post object.
+ * @param bool    $update  Whether this is an existing post being updated.
+ */
+function gleo_maybe_invalidate_llms_cache_on_save( $post_id, $post, $update ) {
+	if ( wp_is_post_revision( $post_id ) || wp_is_post_autosave( $post_id ) ) {
+		return;
+	}
+	if ( ! $post instanceof WP_Post || 'publish' !== $post->post_status ) {
+		return;
+	}
+	if ( ! in_array( $post->post_type, array( 'post', 'page' ), true ) ) {
+		return;
+	}
+	gleo_invalidate_llms_cache();
+}
 
 // Deactivation hook
 register_deactivation_hook( __FILE__, 'gleo_deactivate' );
@@ -444,6 +532,7 @@ function gleo_admin_scripts( $hook ) {
 			'pages'           => $pages_data,
 			'nodeApiUrl'      => esc_url_raw( $node_api_url ),
 			'practiceProfile' => class_exists( 'Gleo_Practice_Profile' ) ? Gleo_Practice_Profile::get() : array(),
+			'llmsScrapeMeta'  => class_exists( 'Gleo_Llms_Scraper' ) ? Gleo_Llms_Scraper::get_scrape_metadata() : array(),
 		);
 
 		wp_localize_script( 'gleo-admin-app', 'gleoData', $gleo_data );
