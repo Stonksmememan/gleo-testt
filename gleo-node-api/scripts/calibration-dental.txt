@@ -1,0 +1,31 @@
+# Calibration set: real independent dental practice sites.
+#
+# Used to sanity-check the score distribution produced by lib/site-audit.js.
+# These are third-party sites we do not control, so entries will rot over time —
+# a failure here usually means the site changed, not that the auditor broke.
+#
+#   node scripts/audit-site.js --file scripts/calibration-dental.txt --csv /tmp/calibration.csv
+
+# Austin, TX
+https://www.pecanparkdentistry.com/
+https://austinfamilydds.com/
+https://brushycreekdentistryaustin.com/
+https://www.groveatxdental.com/
+https://baucumfamilydentistry.com/
+
+# Portland, OR / Seattle, WA
+https://kingdental.net/
+https://www.dentaltom.com/
+https://mintiefamilydentistry.com/
+https://giffordfamilydentistry.com/
+https://www.drglennasequeira.com/
+
+# Pediatric and orthodontic specialists
+https://www.chicagopedoortho.com/
+https://www.magnoliapediatricdentistry.com/
+https://www.milktoothdental.com/
+https://www.smilevistadental.com/
+https://www.ekd7thandbell.com/
+
+# National chain, included as a contrast case
+https://www.aspendental.com/

@@ -4,6 +4,7 @@ const cors = require('cors');
 const crypto = require('crypto');
 const clients = require('./config/clients');
 const { analyzePost } = require('./lib/geo-analyzer');
+const { auditSite } = require('./lib/site-audit');
 const { runVisionCritique } = require('./lib/vision-critique');
 const { runAppearanceAnalysis } = require('./lib/appearance-enhancer');
 const analyticsRoutes = require('./routes/analytics');
@@ -102,6 +103,30 @@ app.use('/v1/analytics', analyticsRoutes);
 
 app.post('/api/process', verifySignature, (req, res) => {
   res.json({ status: 'success', message: 'Signature verified successfully!', data: req.body });
+});
+
+/**
+ * Whole-site GEO audit for any URL — no WordPress plugin required.
+ * Kept behind verifySignature: opening it publicly is a Phase 1 concern that
+ * needs per-tenant credentials and rate limiting first.
+ */
+app.post('/v1/audit/site', verifySignature, async (req, res) => {
+  const { site_url, max_pages, allow_render, practice_profile } = req.body || {};
+  if (!site_url) {
+    return res.status(400).json({ error: 'Missing site_url' });
+  }
+
+  try {
+    const report = await auditSite(site_url, {
+      maxPages: Math.min(Math.max(parseInt(max_pages, 10) || 12, 1), 30),
+      allowRender: Boolean(allow_render),
+      practiceProfile: practice_profile || null,
+    });
+    return res.json({ status: 'ok', data: report });
+  } catch (err) {
+    console.error('[Audit] Site audit failed:', err.message);
+    return res.status(422).json({ error: err.message });
+  }
 });
 
 app.post('/v1/optimize/critique', verifySignature, async (req, res) => {
